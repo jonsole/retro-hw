@@ -15,6 +15,7 @@ A core is the engine of a unit: the part that is the same whatever CPU drives it
 | `platform/sim/` | Behavioural stand-ins for the platform parts |
 | `sim/` | Models for testbenches: SRAM, FT232H, PS/2 keyboard |
 | `test/` | A unit test per core, one folder each |
+| `docs/` | A spec and a guide per core ([index](docs/README.md)) |
 
 ## Rules for a core
 
@@ -24,6 +25,7 @@ A core is the engine of a unit: the part that is the same whatever CPU drives it
 4. A feature only one machine uses sits behind a parameter, so the other builds without it.
 5. Every core split out of a unit has a unit test in `test/<core>/`, run by CI.
 6. Lint-clean under Verilator with widths cut short as errors (`lint.sh`).
+7. Every core has a spec in docs/spec and a guide in docs/guide. A machine's registers, addresses and parameter values are documented in that machine, not here.
 
 ## Changes
 
