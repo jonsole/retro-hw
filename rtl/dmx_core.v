@@ -54,6 +54,9 @@
 // the order asked; the unit waits for one port's reads to come back before
 // using the other.
 //
+// LINE and EDGES are built only with their parameters set: without them
+// OP 2 and OP 3 are errors and their states and registers are left out.
+//
 // With PORTJOB set, a port job moves a byte at a time between a FIFO and
 // memory; a channel whose FIFO is not ready gives up its turn.
 module dmx_core #(
@@ -61,7 +64,9 @@ module dmx_core #(
     parameter        LE      = 0,              // 1: memory words little-endian
     parameter        MASKIMG = 1,              // 0: no 1 bpp mask image (MASK 1 is an error)
     parameter        XPORT   = 0,              // 1: the other port, for addresses past CHIP_WORDS
-    parameter        PORTJOB = 0               // 1: port jobs (FIFO to memory, memory to FIFO)
+    parameter        PORTJOB = 0,              // 1: port jobs (FIFO to memory, memory to FIFO)
+    parameter        LINE    = 0,              // 1: LINE jobs (OP 2); 0: OP 2 is an error
+    parameter        EDGES   = 0               // 1: EDGES jobs (OP 3, which use LINE's stepping); 0: OP 3 is an error
 ) (
     input  wire        clk,
     input  wire        rst,
@@ -356,6 +361,9 @@ module dmx_core #(
     reg  [4:0]  es;
     reg  [1:0]  last_ch;
     wire [3:0]  runnable = busy & ~pause & {4{enable}};
+    // LINE's stepping is built for LINE or EDGES; EDGES' own states for EDGES
+    localparam  LS = (LINE != 0) || (EDGES != 0);
+    localparam  ES = (EDGES != 0);
 
     reg  [4:0]  r_tot, r_iss, r_got;   // reads to make, made, back
     reg  [22:0] r_a;                   // the next address (S_RD, S_RA, S_DESC)
@@ -403,10 +411,10 @@ module dmx_core #(
             S_RD, S_RA: xq_v = (r_iss < r_tot) && !e_bad;
             S_DR:       begin xq_v = (g_dneed != 16'd0) && !e_bad; xq_w = dr_a; end
             S_WR:       begin xq_v = b_v && !b_skip && !e_bad; xq_we = 1'b1; xq_w = b_w; end
-            S_LRD:      begin xq_v = (r_iss == 5'd0) && !e_bad; xq_w = w_dw; end
-            S_LWR:      begin xq_v = (r_iss == 5'd0) && !e_bad; xq_we = 1'b1; xq_w = w_dw; end
-            S_EFETCH:   begin xq_v = (r_iss == 5'd0) && (w_rows != 16'd0) && !e_bad; xq_w = w_aw; end
-            S_EPTS:     begin xq_v = (r_iss < 5'd4) && !e_bad; xq_w = e_pw; end
+            S_LRD:      if (LS) begin xq_v = (r_iss == 5'd0) && !e_bad; xq_w = w_dw; end
+            S_LWR:      if (LS) begin xq_v = (r_iss == 5'd0) && !e_bad; xq_we = 1'b1; xq_w = w_dw; end
+            S_EFETCH:   if (ES) begin xq_v = (r_iss == 5'd0) && (w_rows != 16'd0) && !e_bad; xq_w = w_aw; end
+            S_EPTS:     if (ES) begin xq_v = (r_iss < 5'd4) && !e_bad; xq_w = e_pw; end
             S_PORT:     if (job_bport) begin       // FIFO to memory: a byte at a time
                             xq_v  = p_rxv && pc_n < 4'd8 && w_dleft != 24'd0 && !e_bad;
                             xq_we = 1'b1;
@@ -487,7 +495,8 @@ module dmx_core #(
     // LINE and EDGES: the line's octant, N (the shorter length) and M (the
     // longer): LINE's from its job, EDGES' from the edge (kept in w_le,
     // w_carry and w_aleft)
-    wire        is_e     = (job_op == 3'd3);
+    wire        is_e     = ES && (job_op == 3'd3);
+    wire        is_l     = (LINE != 0) && (job_op == 3'd2);
     wire        l_ymaj   = is_e ? w_le[0] : job_ymaj;
     wire        l_xneg   = is_e ? w_le[1] : job_xneg;
     wire        l_yneg   = is_e ? w_le[2] : job_yneg;
@@ -524,10 +533,11 @@ module dmx_core #(
     wire [17:0] l_e      = w_sw[17:0];
     wire        l_minor  = !l_e[17] && (l_e != 18'd0);                    // E > 0: the shorter axis too
 
-    // Job checks: OP 4-7 and MASK 3 are errors, so is MASK 1 without
-    // MASKIMG, and whatever the wrapper rejects. LINE: no DESC or MASK,
-    // WIDTH up to 32,768, HEIGHT up to WIDTH - 1
-    wire        bad_line = (job_op == 3'd2) && (job_desc || job_mask != 2'd0 || job_width > 24'd32768
+    // Job checks: OP 4-7 and MASK 3 are errors, so are OP 2 without LINE,
+    // OP 3 without EDGES, MASK 1 without MASKIMG, and whatever the wrapper
+    // rejects. LINE: no DESC or MASK, WIDTH up to 32,768, HEIGHT up to
+    // WIDTH - 1
+    wire        bad_line = is_l && (job_desc || job_mask != 2'd0 || job_width > 24'd32768
                                                 || (job_width != 24'd0 && {8'd0, job_height} > job_width - 1'b1));
     // EDGES: no DESC or MASK, even POINTS and EDGES, up to 65,535 edges
     wire        bad_edges = is_e && (job_desc || job_mask != 2'd0 || job_aaddr[0] || job_baddr[0]
@@ -538,7 +548,8 @@ module dmx_core #(
                         || (portjob && (job_op != 3'd0 || job_minterm != 8'hCC || job_mask != 2'd0 || job_bconst
                                         || (job_bport && job_dport) || job_bpp != 2'd3 || job_height != 16'd1
                                         || job_desc));
-    wire        bad_op   = (job_op > 3'd3) || (job_mask == 2'd3) || (MASKIMG == 0 && job_mask == 2'd1) || job_bad
+    wire        bad_op   = (job_op > 3'd3) || (LINE == 0 && job_op == 3'd2) || (EDGES == 0 && job_op == 3'd3)
+                        || (job_mask == 2'd3) || (MASKIMG == 0 && job_mask == 2'd1) || job_bad
                         || bad_line || bad_edges || bad_port;
 
     // Row start
@@ -673,7 +684,7 @@ module dmx_core #(
                     end
                     M_SETUP: es <= S_SETUP;
                     default: if (w_live && w_ch == cur)
-                                 es <= (job_op == 3'd2 || job_op == 3'd3) ? S_LPIX : (mode[cur] == M_ROW) ? S_ROW1 : S_GRP;
+                                 es <= (is_l || is_e) ? S_LPIX : (mode[cur] == M_ROW) ? S_ROW1 : S_GRP;
                              else begin
                                  su_back <= 1'b1;
                                  es <= S_SETUP;
@@ -710,7 +721,7 @@ module dmx_core #(
             // back to a job after another channel's turn: the width in bits again
             S_BACK: begin
                 w_nbits <= {3'd0, job_width} << job_bpp;
-                es <= (job_op == 3'd2 || job_op == 3'd3) ? S_LSET : (mode[cur] == M_ROW) ? S_ROW1 : S_GRP;
+                es <= (is_l || is_e) ? S_LSET : (mode[cur] == M_ROW) ? S_ROW1 : S_GRP;
             end
 
             S_CHECK: begin
@@ -726,7 +737,7 @@ module dmx_core #(
                     e_addr <= chdesc[cur];
                     e_bad  <= 1'b1;
                     es     <= S_SAVE;
-                end else if (job_op == 3'd3) begin
+                end else if (is_e) begin
                     if (job_width == 24'd0) begin
                         w_rows <= 16'd0;             // no edges: the job ends
                         es     <= S_SAVE;
@@ -737,7 +748,7 @@ module dmx_core #(
                         mode[cur] <= M_RUN;
                         es      <= S_EFETCH;
                     end
-                end else if (job_op == 3'd2) begin
+                end else if (is_l) begin
                     if (job_width == 24'd0) begin
                         w_rows <= 16'd0;             // nothing to do: the job ends
                         es     <= S_SAVE;
@@ -995,7 +1006,7 @@ module dmx_core #(
 
             // ---------------------------------------------------- LINE
             // E's two steps and the address's two steps, from the fixed fields
-            S_LSET: begin : lset
+            S_LSET: if (LS) begin : lset
                 reg [26:0] xs, ys;
                 l_ins  <= {1'b0, l_nn, 1'b0};
                 l_ind  <= {1'b0, l_nn, 1'b0} - {1'b0, l_mm, 1'b0};               // 2(N - M)
@@ -1009,7 +1020,7 @@ module dmx_core #(
                 es     <= S_LPIX;
             end
             // the next pixel: drawn, left alone or clipped
-            S_LPIX: begin
+            S_LPIX: if (LS) begin
                 r_iss <= 5'd0; r_got <= 5'd0;
                 l_c   <= 16'd0;                  // (C not read: the result does not use it)
                 if (w_dleft == 24'd0 && is_e) begin
@@ -1027,7 +1038,7 @@ module dmx_core #(
                 else
                     es <= l_needc ? S_LRD : S_LCMB;
             end
-            S_LRD: begin
+            S_LRD: if (LS) begin
                 if (xq_take) r_iss <= 5'd1;
                 if (x_rv) begin
                     l_c   <= x_rd;
@@ -1038,13 +1049,13 @@ module dmx_core #(
                 end else if (r_got == 5'd1 && !acc_held)
                     es <= S_LCMB;
             end
-            S_LCMB: begin
+            S_LCMB: if (LS) begin
                 b_out <= (l_res & l_pm) | (l_c & ~l_pm);
                 b_be  <= {|l_pm[15:8], |l_pm[7:0]};
                 r_iss <= 5'd0;
                 es    <= S_LWR;
             end
-            S_LWR: begin
+            S_LWR: if (LS) begin
                 if (xq_take) r_iss <= 5'd1;
                 if (e_bad) begin
                     if (!acc_held) es <= S_DRAIN;
@@ -1052,7 +1063,7 @@ module dmx_core #(
                     es <= S_LSTEP;
             end
             // on along the line (after the last pixel the count reaches 0)
-            S_LSTEP: begin
+            S_LSTEP: if (LS) begin
                 w_dleft <= w_dleft - 1'b1;
                 w_ao    <= w_ao + 1'b1;
                 w_sw    <= {5'd0, l_e + (l_minor ? l_ind : l_ins)};
@@ -1067,7 +1078,7 @@ module dmx_core #(
 
             // ---------------------------------------------------- EDGES
             // the next edge's word, or the end of the job
-            S_EFETCH: begin
+            S_EFETCH: if (ES) begin
                 if (w_rows == 16'd0) begin
                     if (!acc_held) begin         // every edge done, the last write taken
                         mode[cur] <= M_ROW;
@@ -1088,7 +1099,7 @@ module dmx_core #(
                 end
             end
             // its two points: x and y of a, then of b (words as stored)
-            S_EPTS: begin
+            S_EPTS: if (ES) begin
                 if (xq_take) r_iss <= r_iss + 1'b1;
                 if (x_rv) begin
                     case (r_got[1:0])
@@ -1105,7 +1116,7 @@ module dmx_core #(
                     es <= S_ECALC;
             end
             // left out, or set up as a line
-            S_ECALC: begin
+            S_ECALC: if (ES) begin
                 r_iss <= 5'd0; r_got <= 5'd0;
                 if (e_range || e_beyond) begin
                     w_rows <= w_rows - 1'b1;
@@ -1125,7 +1136,7 @@ module dmx_core #(
                 end
             end
             // the first pixel's bit address: origin + 8 y stride + x BPP
-            S_EADDR: begin
+            S_EADDR: if (ES) begin
                 {w_dw, w_od} <= ({job_daddr[22:0], 3'b000} + ({24'd0, job_dbit} << job_bpp) + {e_mul[23:0], 3'b000}
                                  + ({{11{e_x0[15]}}, e_x0} << job_bpp)) & 27'h3FFFFFF;
                 es <= S_LSET;

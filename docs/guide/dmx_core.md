@@ -14,10 +14,11 @@ The core has no registers. Your wrapper owns:
 
 ## A minimal instantiation
 
-An 8-bit machine with little-endian SRAM of 2 MB, no other port, no port jobs:
+An 8-bit machine with little-endian SRAM of 2 MB, no other port, no port jobs, LINE and EDGES built:
 
 ```verilog
-dmx_core #(.CHIP_WORDS(24'h100000), .LE(1), .MASKIMG(1), .XPORT(0), .PORTJOB(0)) dma (
+dmx_core #(.CHIP_WORDS(24'h100000), .LE(1), .MASKIMG(1), .XPORT(0), .PORTJOB(0),
+           .LINE(1), .EDGES(1)) dma (
     .clk(clk), .rst(rst),
     .enable(dma_on), .pause(pause),
     .start_ld(go_load), .start_run(go_run), .stop(go_stop),
@@ -88,4 +89,5 @@ irq_set[n] ______________________ ... ____/~~~\__   (if the job asks)
 - **Idle-only writes.** `start_ld`, `start_run` and `da_we` are ignored while the channel is busy; job register writes should be too.
 - **`xp_ok` is combinational.** It looks at `acc_a` and `acc_we` in the same clock. Do not make it depend on the core's other outputs.
 - **Reads in order.** Both ports must return reads in the order they were taken. The core counts them; a lost or extra `rvalid` hangs it.
+- **LINE and EDGES are off by default.** Set `LINE` and `EDGES` to 1 if your software draws lines or polygons with the engine; at 0 those jobs are errors, and their logic is left out. With both at 0 the clip and octant inputs can be tied to 0.
 - **Mask image size.** `MASKIMG = 0` saves about 400 LUTs; a job asking for a mask image is then an error.

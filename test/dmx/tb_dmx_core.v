@@ -3,13 +3,19 @@
 // arrays and puts the running channel's on the job ports while the core
 // sets it up. Memory answers after a random wait, reads come back in order
 // a few clocks later. Each job's result is checked byte by byte against a
-// model of the pixels. Run with LE = 0 and LE = 1 (-DLE=1).
+// model of the pixels. Run with LE = 0 and LE = 1 (-DLE=1), LINE and
+// EDGES built; and with them left out (-DLINES=0), where OP 2 and OP 3
+// must be errors.
 `timescale 1ns/1ps
 `ifndef LE
 `define LE 0
 `endif
+`ifndef LINES
+`define LINES 1
+`endif
 module tb_dmx_core;
     localparam LE = `LE;
+    localparam LINES = `LINES;
     reg clk = 0, rst = 1;
     always #5 clk = ~clk;
 
@@ -101,7 +107,8 @@ module tb_dmx_core;
         if (p_txpush) begin txq[tx_n] = p_txd; tx_n = tx_n + 1; end
     end
 
-    dmx_core #(.CHIP_WORDS(24'd8192), .LE(LE), .MASKIMG(1), .XPORT(1), .PORTJOB(1)) dut (
+    dmx_core #(.CHIP_WORDS(24'd8192), .LE(LE), .MASKIMG(1), .XPORT(1), .PORTJOB(1),
+               .LINE(LINES), .EDGES(LINES)) dut (
         .clk(clk), .rst(rst),
         .enable(1'b1), .pause(pause), .start_ld(start_ld), .start_run(start_run), .stop(stop),
         .clr_done(clr_done), .clr_err(clr_err), .da_we(da_we), .da_d(da_d),
@@ -162,6 +169,10 @@ module tb_dmx_core;
     endfunction
     task wrb(input integer a, input [7:0] v);
         if ((LE != 0) == (a % 2 == 0)) mem[a / 2][7:0] = v; else mem[a / 2][15:8] = v;
+    endtask
+    task wr16(input integer a, input [15:0] v);      // a 16-bit number, as the memory stores it
+        if (LE != 0) begin wrb(a, v[7:0]); wrb(a + 1, v[15:8]); end
+        else begin wrb(a, v[15:8]); wrb(a + 1, v[7:0]); end
     endtask
     task snap;
         integer a;
@@ -317,6 +328,7 @@ module tb_dmx_core;
             end
         go(4); check("other port to memory");
 
+        if (LINES) begin
         // ---- LINE at 8 bpp, x major, clipped at x = 8
         clear(0); c_op[0] = 2; c_val[0] = 32'hFFFFFFE7; c_mt[0] = 8'hCC; c_d[0] = 24'h3200; c_dstr[0] = 64;
         c_a[0] = 0; c_b[0] = 0; c_w[0] = 11; c_h[0] = 4;
@@ -330,6 +342,38 @@ module tb_dmx_core;
         end
         go(1); check("LINE clipped");
         clip_xmax = 16'h7FFF;
+
+        // ---- EDGES: one edge drawn, one wholly left of the clip rectangle
+        clear(0); c_op[0] = 3; c_val[0] = 32'hFFFFFFFF; c_val[0][7:0] = 8'h3C; c_d[0] = 24'h3200; c_dstr[0] = 64;
+        c_a[0] = 24'h3600; c_b[0] = 24'h3700; c_w[0] = 2;
+        wr16(24'h3600, 2);  wr16(24'h3602, 1);     // point 0: (2, 1)
+        wr16(24'h3604, 9);  wr16(24'h3606, 4);     // point 1: (9, 4)
+        wr16(24'h3608, -10); wr16(24'h360A, 0);    // point 2: (-10, 0)
+        wr16(24'h360C, -3); wr16(24'h360E, 2);     // point 3: (-3, 2)
+        wrb(24'h3700, 0); wrb(24'h3701, 1);        // edge 0: points 0 and 1
+        wrb(24'h3702, 2); wrb(24'h3703, 3);        // edge 1: points 2 and 3
+        clip_xmin = 0;
+        snap;
+        x = 2; y = 1; e = 2 * 3 - 7;
+        for (i = 0; i < 8; i = i + 1) begin
+            ref[24'h3200 + y * 64 + x] = 8'h3C;
+            x = x + 1;
+            if (e > 0) begin y = y + 1; e = e + 2 * (3 - 7); end else e = e + 2 * 3;
+        end
+        go(1); check("EDGES");
+        clip_xmin = 16'h8000;
+        end else begin
+        // ---- without LINE and EDGES, OP 2 and OP 3 are errors
+        for (i = 2; i < 4; i = i + 1) begin
+            clear(0); c_op[0] = i; c_w[0] = 4; c_h[0] = 1; c_d[0] = 24'h3200; c_dstr[0] = 64;
+            @(negedge clk) da_we = 4'h1; da_d = 24'h0100 + i; @(negedge clk) da_we = 0;
+            snap; go(1); check("no write");
+            if (!err[0] || ea_q[23:0] != 24'h0100 + i) begin
+                fails = fails + 1; $display("FAIL OP %0d left out: err %b at %h", i, err[0], ea_q[23:0]);
+            end else $display("ok   OP %0d left out is an error", i);
+            @(negedge clk) clr_err = 4'h1; @(negedge clk) clr_err = 0;
+        end
+        end
 
         // ---- port jobs: FIFO to memory, memory to FIFO
         clear(1); c_bport[1] = 1; c_d[1] = 24'h3301; c_w[1] = 21;
@@ -367,8 +411,8 @@ module tb_dmx_core;
         if (!err[3] || ea_q[95:72] != 24'h1234) begin fails = fails + 1; $display("FAIL bad op: err %b at %h", err[3], ea_q[95:72]); end
         else $display("ok   bad op");
 
-        if (fails == 0) $display("TEST PASSED (LE=%0d)", LE);
-        else $display("TEST FAILED: %0d (LE=%0d)", fails, LE);
+        if (fails == 0) $display("TEST PASSED (LE=%0d LINES=%0d)", LE, LINES);
+        else $display("TEST FAILED: %0d (LE=%0d LINES=%0d)", fails, LE, LINES);
         $finish;
     end
 endmodule

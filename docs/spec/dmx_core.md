@@ -11,7 +11,7 @@ Status: **draft**
 | Channels | 4, round robin; one at a time on the datapath |
 | Turn | A group of up to 16 destination words, 16 pixels of a line, or 8 bytes of a port job |
 | A channel alone | Goes straight on to its next group or row: no save, pick or restore |
-| Operations | BLIT (any of the 256 minterms of A, B and C), ADD (per pixel, wrapping or saturating, signed or not), LINE, EDGES |
+| Operations | BLIT (any of the 256 minterms of A, B and C), ADD (per pixel, wrapping or saturating, signed or not); optionally LINE (`LINE`) and EDGES (`EDGES`) |
 | Pixel depths | 1, 2, 4 and 8 bits |
 | A (the mask) | None (all ones), a 1 bpp image, or B against a key colour |
 | B (the source) | Memory, with any bit offset, or a constant |
@@ -58,7 +58,7 @@ The wrapper decodes the running channel's job onto these ports. It changes them 
 |------|-----|-------|---------|
 | `su_v` | out | 1 | The core is setting up channel `cur`'s job: 8 clocks running |
 | `su_i` | out | 3 | Which of the 8 clocks, 0 to 7 (for a wrapper that reads its job a long word a clock) |
-| `job_op` | in | 3 | 0 BLIT, 1 ADD, 2 LINE, 3 EDGES; 4 to 7 are an error |
+| `job_op` | in | 3 | 0 BLIT, 1 ADD, 2 LINE (with `LINE`), 3 EDGES (with `EDGES`); anything else is an error |
 | `job_minterm` | in | 8 | Bit a×4 + b×2 + c is D for those bits of A, B and C |
 | `job_sat` | in | 1 | ADD: saturate |
 | `job_signed` | in | 1 | ADD: pixels are signed |
@@ -141,8 +141,10 @@ The wrapper picks which FIFO from the job (the port's number is its own field).
 | `MASKIMG` | 1 | 0: no 1 bpp mask image; MASK 1 is an error. Saves about 400 LUTs; for example 0 on a small FPGA |
 | `XPORT` | 0 | 1: the other port, for addresses past `CHIP_WORDS`. For example 1 where the engine can reach registers or a ROM |
 | `PORTJOB` | 0 | 1: port jobs. For example 1 where a FIFO (SD card, USB serial) is fed by the engine |
+| `LINE` | 0 | 1: LINE jobs (OP 2). 0: OP 2 is an error, and LINE's states and registers are left out (unless `EDGES` needs them). For example 1 on a machine whose software draws lines with the engine |
+| `EDGES` | 0 | 1: EDGES jobs (OP 3), which step their lines with LINE's machinery (built for either). 0: OP 3 is an error, and EDGES' states and registers are left out |
 
-With `XPORT` or `PORTJOB` at 0, that part's inputs are ignored and its requests and strobes stay 0 (its data outputs are not driven).
+With `XPORT` or `PORTJOB` at 0, that part's inputs are ignored and its requests and strobes stay 0 (its data outputs are not driven). With `LINE` and `EDGES` at 0, the clip inputs and the octant inputs are ignored.
 
 ## 4. Behaviour
 
@@ -208,6 +210,8 @@ Descriptor words (`dl_w0`, `dl_w1`) and EDGES' point coordinates are taken as st
 
 ### 4.5 LINE and EDGES
 
+These are built only with their parameters set. Without them, a job with OP 2 or OP 3 ends at once with an error, as any bad op does.
+
 LINE draws `job_width` pixels from `job_daddr`/`job_dbit`, stepping one pixel along the longer axis each time and one along the shorter when the error term is above 0 (Bresenham). x and y (`job_aaddr`, `job_baddr` bits 15-0) are counted only to clip. A pixel's A is bit 31 - (n mod 32) of `job_value`, its B the value's bits 7-0. Pixels outside the clip rectangle are left alone. A turn is 16 pixels.
 
 EDGES reads `job_width` edge words from `job_baddr`, each naming two points in the table at `job_aaddr` (x then y, a word each), and draws each edge as a line from its first point. An edge with an end outside -16384 to 16383, or wholly beyond one side of the clip rectangle, is left out.
@@ -224,7 +228,7 @@ With `PORTJOB`, a job with `job_bport` or `job_dport` moves `job_width` bytes be
 |-------|------------------|
 | An access past `CHIP_WORDS` that the other port does not take | The byte address of the access |
 | A descriptor address not a multiple of 4, or not wholly reachable | The descriptor address |
-| OP 4-7, MASK 3, MASK 1 without `MASKIMG`, `job_bad`, a bad LINE, EDGES or port job | The descriptor address |
+| OP 4-7, OP 2 without `LINE`, OP 3 without `EDGES`, MASK 3, MASK 1 without `MASKIMG`, `job_bad`, a bad LINE, EDGES or port job | The descriptor address |
 
 After an error the core waits for every read it asked for to come back, then ends the job.
 
@@ -248,7 +252,7 @@ Field layouts, register addresses and the descriptor format are the machine's.
 
 ## 6. Test plan
 
-`test/dmx` (`make -C test dmx`) runs one testbench twice, with `LE` 0 and 1, the core built with every option. The testbench acts as the wrapper, keeping each channel's job in arrays. Memory answers after random waits; reads come back in order 2-5 clocks later. Each result is checked byte by byte against a model of the pixels.
+`test/dmx` (`make -C test dmx`) runs one testbench three times: with `LE` 0 and 1, the core built with every option (`LINE` and `EDGES` 1); and with `LINE` and `EDGES` 0, where the LINE and EDGES jobs are replaced by checks that OP 2 and OP 3 are errors and write nothing. The testbench acts as the wrapper, keeping each channel's job in arrays. Memory answers after random waits; reads come back in order 2-5 clocks later. Each result is checked byte by byte against a model of the pixels.
 
 | Test | Checks |
 |------|--------|
@@ -261,17 +265,19 @@ Field layouts, register addresses and the descriptor format are the machine's.
 | Four channels at once | Round robin, set-up again on each return |
 | Other port | A copy from the other port to memory |
 | LINE | A line with its end clipped |
+| EDGES | One edge drawn from a point table, one left out (wholly left of the clip rectangle) |
+| LINE and EDGES left out | OP 2 and OP 3 are errors at the descriptor address, nothing written |
 | Port jobs | FIFO to memory, memory to FIFO |
 | Descriptor chain | A load after a job; `dl_` strobes, the new address, two interrupts |
 | Errors | An address past memory; a bad op |
 
-The machines' system tests check their wrappers: register access, descriptors in their layout, EDGES, timing and random jobs against a model.
+The machines' system tests check their wrappers: register access, descriptors in their layout, timing and random jobs against a model.
 
 ## 7. Open points
 
 | # | Point |
 |---|-------|
-| 1 | LINE and EDGES are always built; a parameter could leave them out where no machine uses them |
-| 2 | The other port's ordering rule (one port's reads back before the other's) is simple and slow for mixed jobs |
-| 3 | A group is fixed at 16 words; a smaller one would save buffer space on a small FPGA |
-| 4 | The test does not cover EDGES, signed ADD or a stop and pause mid-job; the machines' tests do |
+| 1 | The other port's ordering rule (one port's reads back before the other's) is simple and slow for mixed jobs |
+| 2 | A group is fixed at 16 words; a smaller one would save buffer space on a small FPGA |
+| 3 | The test does not cover signed ADD, EDGES' range check, or a stop and pause mid-job; the machines' tests do |
+| 4 | EDGES on its own still builds LINE's stepping, which it uses; only OP 2's check and set-up are then left out |
