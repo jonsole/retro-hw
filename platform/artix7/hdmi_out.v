@@ -1,4 +1,4 @@
-// DVI over HDMI on the KS3 (spec 4, section 3.3): three TMDS data pairs and
+// DVI over HDMI on the Next (docs/spec/platform.md): three TMDS data pairs and
 // the clock pair. Each 10-bit word goes out least significant bit first
 // through a 10:1 OSERDESE2 pair (DDR at 5 x the pixel clock).
 // Pair order: 0 blue, 1 green, 2 red, 3 clock, as in the Next's own
