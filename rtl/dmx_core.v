@@ -33,7 +33,9 @@
 // write each destination word. Writes are pipelined so a request is ready
 // as each one is taken. When there is nothing more to read the writes start
 // at once, while the last B words are still coming back; a group with
-// nothing to read at all goes straight to its writes.
+// nothing to read at all goes to its writes from the B phase's first clock.
+// (S_GRP itself always goes on to S_RD: the counts it works out are
+// registered before anything decides on them, for timing.)
 //
 // LINE (OP 2) steps one pixel at a time: each pixel inside the clip
 // rectangle is its word read (when the minterm needs C), merged through the
@@ -415,7 +417,8 @@ module dmx_core #(
             S_LWR:      if (LS) begin xq_v = (r_iss == 5'd0) && !e_bad; xq_we = 1'b1; xq_w = w_dw; end
             S_EFETCH:   if (ES) begin xq_v = (r_iss == 5'd0) && (w_rows != 16'd0) && !e_bad; xq_w = w_aw; end
             S_EPTS:     if (ES) begin xq_v = (r_iss < 5'd4) && !e_bad; xq_w = e_pw; end
-            S_PORT:     if (job_bport) begin       // FIFO to memory: a byte at a time
+            S_PORT:     if (PORTJOB == 0) ;
+                        else if (job_bport) begin  // FIFO to memory: a byte at a time
                             xq_v  = p_rxv && pc_n < 4'd8 && w_dleft != 24'd0 && !e_bad;
                             xq_we = 1'b1;
                             xq_w  = w_drow[23:1];
@@ -436,14 +439,18 @@ module dmx_core #(
 
     wire        xq_chip = inchip(xq_w);
     wire        xq_bad  = xq_v && !xq_chip && !(XPORT != 0 && xp_ok);
-    wire        chip_ok = (!mem_req || mem_ack) && !xp_req && x_out == 5'd0;
-    wire        x_ok    = (!xp_req || xp_ack) && chip_out == 5'd0;
-    wire        xq_take = xq_v && !xq_bad && (xq_chip ? chip_ok : x_ok);
-    wire        acc_held = mem_req || xp_req;                        // a request not yet taken
-    wire        rd_out   = (chip_out != 5'd0) || (x_out != 5'd0);    // reads not yet back
+    // Without XPORT the other port's inputs are not looked at, and every
+    // access taken goes to the memory port
+    wire        xp_on    = (XPORT != 0);
+    wire        chip_ok  = (!mem_req || mem_ack) && !(xp_on && (xp_req || x_out != 5'd0));
+    wire        x_ok     = (!xp_req || xp_ack) && chip_out == 5'd0;
+    wire        xq_take  = xq_v && !xq_bad && ((xq_chip || !xp_on) ? chip_ok : x_ok);
+    wire        xq_tchip = xq_take && (xq_chip || !xp_on);                 // taken, for the memory port
+    wire        acc_held = mem_req || (xp_on && xp_req);                   // a request not yet taken
+    wire        rd_out   = (chip_out != 5'd0) || (xp_on && x_out != 5'd0); // reads not yet back
     // Reads back, in order: as stored (descriptors, points) and in the engine's order
-    wire        x_rv  = mem_rvalid || xp_rvalid;
-    wire [15:0] x_raw = mem_rvalid ? mem_rdata : xp_rdata;
+    wire        x_rv  = mem_rvalid || (xp_on && xp_rvalid);
+    wire [15:0] x_raw = (xp_on && !mem_rvalid) ? xp_rdata : mem_rdata;
     wire [15:0] x_rd  = order(x_raw);
     wire [15:0] x_wd  = order(xq_wd);
     wire [1:0]  x_be  = !xq_we ? 2'b11 : (LE != 0) ? {xq_be[0], xq_be[1]} : xq_be;
@@ -573,8 +580,8 @@ module dmx_core #(
 `endif
 
     // Into S_WR: the write pipeline from the group's first word. From S_DR,
-    // and straight from S_GRP, S_RD or S_RA when there is nothing more to
-    // read before the writes.
+    // and straight from S_RD or S_RA when there is nothing more to read
+    // before the writes.
     task go_wr;
         begin
             wj   <= 5'd0;
@@ -612,7 +619,7 @@ module dmx_core #(
                 e_addr <= {xq_w, 1'b0};
             end
             // The memory port: one request, held until taken
-            if (xq_take && xq_chip) begin
+            if (xq_tchip) begin
                 mem_req   <= 1'b1;
                 mem_we    <= xq_we;
                 mem_addr  <= xq_w[20:0];
@@ -620,7 +627,7 @@ module dmx_core #(
                 mem_be    <= x_be;
             end else if (mem_ack)
                 mem_req <= 1'b0;
-            chip_out <= chip_out + ((xq_take && xq_chip && !xq_we) ? 5'd1 : 5'd0)
+            chip_out <= chip_out + ((xq_tchip && !xq_we) ? 5'd1 : 5'd0)
                                  - (mem_rvalid ? 5'd1 : 5'd0);
             // The other port, the same way
             if (XPORT != 0) begin
@@ -867,9 +874,10 @@ module dmx_core #(
                 r_tot <= nr; r_iss <= 5'd0; r_got <= 5'd0;
                 s_have <= 5'd0;
                 r_a   <= w_sw;
-                // nothing to read before the writes (a fill): straight to them
-                if (nr == 5'd0 && ga == 5'd0 && dn == 16'd0) go_wr;
-                else es <= (nr == 5'd0 && ga == 5'd0) ? S_DR : S_RD;
+                // on to S_RD even with no B words to read: it decides from
+                // the counts registered here (a fill goes from there
+                // straight to the writes, a group with only C words to S_DR)
+                es <= S_RD;
             end
 
             S_RD: begin
@@ -888,8 +896,12 @@ module dmx_core #(
                     go_wr;
                 end else
                 // (a bad access sets e_bad the clock it is seen, so only
-                // "nothing left" or e_bad need looking at here: short paths)
-                if (r_got == r_iss && (r_iss == r_tot || e_bad) && !acc_held) begin
+                // "nothing left" or e_bad need looking at here: short paths).
+                // With nothing but C words to read there is nothing of
+                // this phase's to wait for: a write still held from the
+                // last group is left to the access unit.
+                if (r_got == r_iss && (r_iss == r_tot || e_bad)
+                    && (!acc_held || (r_tot == 5'd0 && g_na == 5'd0))) begin
                     if (e_bad) es <= S_DRAIN;
                     else begin
                         w_sw    <= r_a;

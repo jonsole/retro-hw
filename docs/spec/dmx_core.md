@@ -188,7 +188,7 @@ A group is up to 16 destination words of a row.
 3. C: the destination words needed: every one when the result depends on C, else only the row's first and last words when they cover part of a byte.
 4. The writes, one a clock when the memory takes them. A word whose pixels are all left alone is not written.
 
-When B is the only read, the writes start as soon as the last B read is asked for, and each waits only for its own source word. A group with nothing to read goes straight to its writes. The last write of a group may still be waiting when the next group of the same channel starts.
+When B is the only read, the writes start as soon as the last B read is asked for, and each waits only for its own source word. The group's counts are registered before anything decides on them (for timing), so the B phase always takes at least a clock: a group with nothing to read starts its writes from there, and a group with only C words to read goes on to them without waiting for a write still held from the last group. The last write of a group may still be waiting when the next group of the same channel starts.
 
 The datapath per destination word:
 
