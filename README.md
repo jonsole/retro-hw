@@ -1,6 +1,6 @@
 # retro-hw
 
-Hardware cores shared by three machines on the ZX Spectrum Next's FPGA: [retro68k](https://github.com/jonsole/retro68k) (a 68000), [retro-z80](https://github.com/jonsole/retro-z80) (a Z80) and retro-6502 (to come). They are the same machine with a different CPU.
+Hardware cores shared by three machines on the ZX Spectrum Next's FPGA: [retro68k](https://github.com/jonsole/retro-68k) (a 68000), [retro-z80](https://github.com/jonsole/retro-z80) (a Z80) and retro-6502 (to come). They are the same machine with a different CPU.
 
 Each machine pulls this repo in as a git submodule at `fpga/retro-hw`, pinned to a commit, and moves to a newer commit when it is ready.
 
