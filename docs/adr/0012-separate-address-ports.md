@@ -1,21 +1,7 @@
-# 0012. Each requester keeps its own address and data ports
+---
+status: accepted
+---
 
-| | |
-|---|---|
-| Status | Accepted |
-| Date | 8 November 2026 |
-| Decided by | Jon, after the trade-off was laid out |
-| Applies to | `rtl/dmac.v`; spec `docs/spec/dmac.md` |
+# Each requester keeps its own address and data ports
 
-## Context
-
-Proposed: share one address bus, with the requester putting its address up when it gets its ack.
-
-## Decision
-
-Keep separate ports. The ack comes the clock after the decision, too late for the address. Sharing would need the grant a cycle earlier, adding 20 ns to every access, and inside an FPGA a shared bus is still a mux or OR tree.
-
-## Consequences
-
-- Saving would have been about 40-60 LUTs at best.
-- Revisit only if LUTs get tight on the Z80 board.
+We considered one shared address bus, with each requester putting its address up when it gets its ack, and rejected it. The ack comes a clock after the decision, too late for the address, so sharing needs the grant a cycle earlier and adds 20 ns to every access; and inside an FPGA a shared bus is still a mux or OR tree, so it would save only about 40-60 LUTs. Revisit only if LUTs get tight on the Z80 board.

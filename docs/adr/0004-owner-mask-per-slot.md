@@ -1,21 +1,7 @@
-# 0004. Each slot has an owner mask, so a slot can have several owners
+---
+status: accepted
+---
 
-| | |
-|---|---|
-| Status | Accepted |
-| Date | 8 November 2026 |
-| Decided by | Jon, in the retrospective grilling |
-| Applies to | `rtl/dmac.v`; spec `docs/spec/dmac.md` |
+# Each slot has an owner mask
 
-## Context
-
-Each slot needs owners. A single owner number per slot is smaller (3 bits a slot for 7 requesters); a mask is wider (7 bits a slot).
-
-## Decision
-
-Each slot has an N-bit owner mask. Among owners that ask, the lower number wins.
-
-## Consequences
-
-- Layers and sprites share the display slots, as they did before.
-- The plan register is wider: S x N bits of owners.
+Each slot has an N-bit owner mask rather than a single owner number, so layers and sprites can share the display slots (lower number first). The cost is a wider plan register: S x N bits instead of S x 3.
