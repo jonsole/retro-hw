@@ -97,7 +97,7 @@ and drive `next_slot` from `slot`. If a requester's timing is tied to the round 
 - **Hold the request.** `req` must stay high, with the address and data still, until the ack. Changing the address while waiting gives a cycle with the new address, which is fine; dropping `req` before the ack can lose the cycle or give one nobody wants.
 - **One ack, one cycle.** After the ack, a requester that wants another word puts up its next request at once. Do not leave the old `req` high for an extra clock, or it gets a second cycle.
 - **Tie off read-only requesters.** `we`, `wdata` and `be` 0. Left open, they cost LUTs in the mux and are X in simulation.
-- **Tie everything off.** An open `req` bit is X in simulation and the scheduler's decision becomes X. Tie unused bits to 0.
+- **Tie everything off, and reset the rest.** An open `req` bit is X in simulation and the scheduler's decision becomes X. Tie unused bits to 0, and make sure every requester's `req`, `urgent` and `high` come from reset flip-flops: the decision is a chain of `?:` choices, so one X input spreads into the winner (retro68k's DMA test hung on an unreset high flag; the old if-chain had read the X as false).
 - **The urgent mark.** An urgent request still waits for locked slots and for urgent requests from lower numbers. Set each requester's mark early enough for that (spec 4.6).
 - **Changing the plan.** It applies from the next cycle decided. Software must not take a locked slot away from a CPU that cannot wait.
 - **The read delay.** `RD_DELAY` must be the memory controller's read latency in clocks: 4 for `sram_ctl.v`. Wrong by one, and read data goes to the wrong requester. `test/dmac`'s `tb_dmac_sram` checks the pair together.

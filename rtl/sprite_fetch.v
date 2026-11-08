@@ -5,7 +5,13 @@
 // Eight sprites (NS of them built). The machine keeps each sprite's
 // settings (window, depth, palette, bits per pixel, steps) in its own
 // registers and hands them over a sprite a clock: set_sel names the
-// sprite, and the set_ inputs are its settings in that clock. The line
+// sprite, and the set_ inputs are its settings in that clock. The core
+// registers them and works on them in the next clock, so set_sel runs one
+// sprite ahead of the calculator; the machine's settings read (a RAM or a
+// mux) gets a whole clock. A write to a sprite's settings that lands in
+// the very clock they are handed over is seen at the sprite's next visit,
+// 8 clocks later (or the next line, if that visit was the one that
+// counts). The line
 // start (the pointer into the image) lives here, as the line-start pass
 // moves it on; the machine reads it and writes it through sel, lst_cur and
 // lst_wr. Each sprite has a 32-word FIFO. The fetcher fetches each line's
@@ -42,17 +48,23 @@
 //   NS         sprites built (1-8): the others never start, fetch or show
 //   PW         bits of the line start and pointer (22 or more); memory
 //              addresses are bits 21-1 of it
-//   SWAP_BYTES 1: a word's low byte (the even byte of a little-endian
+//   AW         bits of a memory word address (mem_addr): bits AW..1 of the
+//              pointer
+//   LITTLE     1: a word's low byte (the even byte of a little-endian
 //              memory) goes to the FIFO word's high half, which holds the
 //              first pixels
 //   URGENT     a fetch is marked urgent when its deadline is fewer than
-//              this many units (8 clocks each) away
+//              this many units (8 clocks each) away. mem_urgent is a
+//              register: the compare for the request mem_req carries in
+//              this clock, with the deadline of the clock before, so it is
+//              at most a clock later than the compare itself
 //   MANUAL     1: a sprite with its DMA off can be fed by hand (dat_wr),
 //              and fifo_count reads how many words its FIFO holds
 module sprite_fetch #(
     parameter NS         = 8,
     parameter PW         = 23,
-    parameter SWAP_BYTES = 0,
+    parameter AW         = 21,
+    parameter LITTLE     = 0,
     parameter URGENT     = 5,
     parameter MANUAL     = 1
 ) (
@@ -92,9 +104,8 @@ module sprite_fetch #(
 
     // Scheduler: the sprite channel
     output reg           mem_req,
-    output reg  [21:1]   mem_addr,
-    output wire [9:0]    mem_deadline,
-    output wire          mem_urgent,
+    output reg  [AW-1:0] mem_addr,
+    output reg           mem_urgent,
     input  wire          mem_ack,
     input  wire          mem_rvalid,
     input  wire [15:0]   mem_rdata,
@@ -158,7 +169,15 @@ module sprite_fetch #(
     reg  signed [3:0] wsh [0:7];               // log2 of screen pixels per word, rounded down (for the deadlines)
     reg  [11:0] wf [0:7], wv [0:7];            // words per image line; per shown line
     reg  [2:0]  cs = 3'd0;
-    assign set_sel = cs;
+    assign set_sel = cs + 3'd1;                // one ahead: the settings are registered below
+    reg  [10:0] i_hstart, i_hstop, i_vstart, i_vstop;
+    reg  [1:0]  i_bpp, i_depth;
+    reg  [3:0]  i_pal;
+    reg  [15:0] i_xstep, i_ystep;
+    always @(posedge clk) begin
+        i_hstart <= set_hstart;  i_hstop <= set_hstop;  i_vstart <= set_vstart;  i_vstop <= set_vstop;
+        i_bpp <= set_bpp;  i_depth <= set_depth;  i_pal <= set_pal;  i_xstep <= set_xstep;  i_ystep <= set_ystep;
+    end
     wire        upd = (beam_h >= 11'd840) && (beam_h < 11'd848);
     reg  [1:0]  upd_d;                         // ... two clocks on, for stage 3
     always @(posedge clk) upd_d <= {upd_d[0], upd};
@@ -187,10 +206,10 @@ module sprite_fetch #(
         reg [15:0] xs;
         reg [17:0] srcf, srcs;
         reg [20:0] bf, bs;
-        // stage 1
-        hs = set_hstart; he = set_hstop; vs = set_vstart; ve = set_vstop;
-        bpp = set_bpp;
-        xs  = lim(set_xstep);
+        // stage 1 (on the registered settings of sprite cs)
+        hs = i_hstart; he = i_hstop; vs = i_vstart; ve = i_vstop;
+        bpp = i_bpp;
+        xs  = lim(i_xstep);
         // all in beam coordinates: the line is beam pixels 0-863, the frame lines 0-624
         hsc   = (hs > 11'd864) ? 11'd864 : hs;
         xec   = (he > 11'd864) ? 11'd864 : (he < hsc) ? hsc : he;
@@ -198,10 +217,10 @@ module sprite_fetch #(
         if (upd) begin
             r_vs[cs]    <= vs;
             r_bpp[cs]   <= bpp;
-            r_depth[cs] <= set_depth;
-            r_pal[cs]   <= set_pal;
+            r_depth[cs] <= i_depth;
+            r_pal[cs]   <= i_pal;
             r_xs[cs]    <= xs;
-            r_ys[cs]    <= lim(set_ystep);
+            r_ys[cs]    <= lim(i_ystep);
             hs_t[cs]    <= hsc[9:0];
             xe_t[cs]    <= xec[9:0];
             wsh[cs]     <= $signed({2'b00, 2'd3 - bpp}) + mag(xs);
@@ -355,11 +374,14 @@ module sprite_fetch #(
     end
     reg         pk_v;
     reg  [2:0]  req_s;
-    localparam [6:0] URG = URGENT;
-    assign mem_deadline = {dl[req_s], 3'b000};
-    assign mem_urgent   = mem_req && (dl[req_s] < URG);
     wire        issue   = pk_v && active[pk] && !flushing[pk] && alive[pk] && !restart[pk]
                           && (!mem_req || mem_ack) && !bu_busy;
+    // urgent, registered: for the request mem_req carries in the next
+    // clock (the one issued now, or the one still waiting), with the
+    // deadline as it stands in this clock
+    wire        n_req   = !rst && (issue || (mem_req && !mem_ack));
+    wire [2:0]  n_s     = issue ? pk : req_s;
+    always @(posedge clk) mem_urgent <= n_req && ({25'd0, dl[n_s]} < URGENT);   // (32-bit compare: no width to cut)
 
     // The picked sprite's next word
     wire [PW-1:0] p_cur = m_ptr[pk];
@@ -371,7 +393,7 @@ module sprite_fetch #(
     reg  [1:0]  q_h, q_t;
 
     // The FIFOs (the word's high half holds the first pixels)
-    wire [15:0] mem_word = SWAP_BYTES ? {mem_rdata[7:0], mem_rdata[15:8]} : mem_rdata;
+    wire [15:0] mem_word = (LITTLE != 0) ? {mem_rdata[7:0], mem_rdata[15:8]} : mem_rdata;
     generate for (g = 0; g < 8; g = g + 1) begin : fifos
         if (g < NS) begin : on
             reg [15:0] mem [0:31];
@@ -413,6 +435,8 @@ module sprite_fetch #(
     reg  [6:0]  d3_dl;
     always @(posedge clk) begin : dcalc
         reg [13:0] wpx;
+        reg [17:0] wp18;
+        reg [4:0]  wsa;
         reg [11:0] c7;
         // 1: the pixels until the sprite's span (0 if the beam is in it)
         if (bt < xe_t[rr])
@@ -425,7 +449,11 @@ module sprite_fetch #(
         // 2: the pixels the words last: words x screen pixels per word (a
         // power of two, rounded down: a shrunk sprite's words may last less
         // than a pixel), and the total
-        wpx = (d1_wsh >= 0) ? ({7'd0, d1_w} << d1_wsh) : ({7'd0, d1_w} >> (-d1_wsh));
+        // one left shift, by wsh + 4 (0 to 11), then /16: cheaper than a
+        // shifter for each direction, and the same for every wsh (-4 to 7)
+        wsa = {d1_wsh[3], d1_wsh} + 5'd4;
+        wp18 = {11'd0, d1_w} << wsa;
+        wpx = wp18[17:4];
         d2_tot <= d1_dpx + wpx;
         d2_rr  <= d1_rr;
         // 3: x 3.5 / 8 (a pixel is 3.7 clocks: on the safe side), less 2 units
@@ -500,7 +528,7 @@ module sprite_fetch #(
             if (issue) begin
                 mem_req  <= 1'b1;
                 req_s    <= pk;
-                mem_addr <= p_cur[21:1];
+                mem_addr <= p_cur[AW:1];
                 q_s[q_t + (mem_ack ? 1'b1 : 1'b0)] <= pk;
                 q_e[q_t + (mem_ack ? 1'b1 : 1'b0)] <= epoch[pk];
                 if (endline) alive[pk] <= 1'b0;   // the line's last word
