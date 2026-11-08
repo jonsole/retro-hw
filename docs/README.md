@@ -26,6 +26,10 @@ Each machine documents its own instantiation: the registers that drive a core, t
 | DMA engine (blitter) | `rtl/dmx_core.v` | [spec/dmx_core.md](spec/dmx_core.md) | [guide/dmx_core.md](guide/dmx_core.md) |
 | Platform parts: HDMI output, DDR output register | `platform/artix7/hdmi_out.v`, `oddr.v`, `lint_stub.v`; `platform/sim/oddr.v` | [spec/platform.md](spec/platform.md) | [guide/platform.md](guide/platform.md) |
 
+## Decisions
+
+The reasons behind the cores' design are in [adr/](adr/README.md), one file a decision.
+
 ## Style
 
 As the machines' specs: plain short sentences, British spelling, tables. A spec has the sections Summary, Ports, Parameters, Behaviour, How a machine uses it, Test plan and Open points, and starts with its status.
