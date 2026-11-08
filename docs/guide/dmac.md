@@ -18,12 +18,11 @@ Two requesters: the CPU (0) and the test port (1). Five slots, so `next_cycle` f
 ```verilog
 wire [3:0]  sc;
 wire        m_start, m_rvalid;
-wire [2:0]  m_cycle, m_rtag, go_tag3;
+wire [2:0]  m_cycle;
 wire        go, go_we;
 wire [20:0] go_addr;
 wire [15:0] go_wdata, mem_rdata;
 wire [1:0]  go_be;
-wire [0:0]  go_tag;                // TW = 1 for N = 2
 wire [1:0]  ack, rvalid_o;
 
 timebase tb0 (.clk(clk), .rst(por), .ph(), .sc(sc));
@@ -37,15 +36,14 @@ dmac #(.N(2), .S(5)) sched (
     .wdata({port_wdata, cpu_wdata}), .be({port_be, cpu_be}),
     .ack(ack), .rvalid_o(rvalid_o),
     .go(go), .go_we(go_we), .go_addr(go_addr), .go_wdata(go_wdata), .go_be(go_be),
-    .go_tag(go_tag), .rvalid(m_rvalid), .rtag(m_rtag[0:0])
+    .rvalid(m_rvalid)
 );
 assign {port_ack, cpu_ack}       = ack;
 assign {port_rvalid, cpu_rvalid} = rvalid_o;
-assign go_tag3 = {2'b00, go_tag};  // sram_ctl's tag is 3 bits
 
 sram_ctl mem (.clk(clk), .rst(por), .sc(sc),
-    .go(go), .go_we(go_we), .go_addr(go_addr), .go_wdata(go_wdata), .go_be(go_be), .go_tag(go_tag3),
-    .start_next(m_start), .next_cycle(m_cycle), .rvalid(m_rvalid), .rtag(m_rtag), .rdata(mem_rdata),
+    .go(go), .go_we(go_we), .go_addr(go_addr), .go_wdata(go_wdata), .go_be(go_be),
+    .start_next(m_start), .next_cycle(m_cycle), .rvalid(m_rvalid), .rdata(mem_rdata),
     /* the SRAM pins */ ...);
 ```
 
@@ -60,13 +58,12 @@ The CPU (requester 0) asks in the clock before slot 0:
  start_next    0    1    0    1    0    1    0
  next_slot     .    0    .    1    .    2    .
  req[0]        1    1    1    0    0    0    0
- go_tag        .    0    .    .    .    .    .
  ack[0]        0    0    1    0    0    0    0
  rvalid_o[0]   0    0    0    0    0    1    0
  mem_rdata                             data
 ```
 
-`req[0]` was high in the clock with `start_next` and slot 0, and the CPU owns slot 0, so the scheduler gave it the cycle (`go`, `go_tag` 0) in that clock. The cycle starts at the next edge. The ack is high in the clock after; the CPU drops `req` then. The data is on `mem_rdata` with `rvalid_o[0]` in the clock with `sc` 3.
+`req[0]` was high in the clock with `start_next` and slot 0, and the CPU owns slot 0, so the scheduler gave it the cycle (`go`) in that clock. The cycle starts at the next edge. The ack is high in the clock after; the CPU drops `req` then. The data is on `mem_rdata` with `rvalid_o[0]` in the clock with `sc` 3: the scheduler kept the CPU's number for those 4 clocks, so it knows the controller's `rvalid` is the CPU's.
 
 ## Numbering the requesters
 
@@ -103,4 +100,4 @@ and drive `next_slot` from `slot`. If a requester's timing is tied to the round 
 - **Tie everything off.** An open `req` bit is X in simulation and the scheduler's decision becomes X. Tie unused bits to 0.
 - **The urgent mark.** An urgent request still waits for locked slots and for urgent requests from lower numbers. Set each requester's mark early enough for that (spec 4.6).
 - **Changing the plan.** It applies from the next cycle decided. Software must not take a locked slot away from a CPU that cannot wait.
-- **The tag.** `sram_ctl.v` carries 3 bits, so at most 8 requesters. With fewer, pad `go_tag` and take the low bits of `rtag`.
+- **The read delay.** `RD_DELAY` must be the memory controller's read latency in clocks: 4 for `sram_ctl.v`. Wrong by one, and read data goes to the wrong requester. `test/dmac`'s `tb_dmac_sram` checks the pair together.

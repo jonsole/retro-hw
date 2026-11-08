@@ -18,7 +18,7 @@ For each cycle the scheduler picks one requester by four rules and hands its cyc
 | Rules | A locked slot's owner, then an urgent request, then an owner, then a high request, then any request |
 | Decision | Combinational, in the clock before the cycle starts |
 | Ack | 1 clock, registered: the clock after the decision |
-| Read data | Back from `sram_ctl.v` with the winner's number as its tag; decoded into a valid line per requester |
+| Read data | `rvalid` from `sram_ctl.v`; the scheduler keeps each cycle's winner for the read delay (`RD_DELAY`), so it knows whose it is. No tag passes between them |
 | Registers | The N ack flip-flops only |
 | Size | 170 LUTs and 7 flip-flops for N = 7, S = 5 with a constant plan; 208 LUTs with a programmable one (4.8) |
 
@@ -29,10 +29,10 @@ For each cycle the scheduler picks one requester by four rules and hands its cyc
                         | slot_owner, slot_lock
                         v
  requester 0   --req/ack-->+--------+    go, go_we, go_addr,      +----------+
- requester 1   --req/ack-->|        |    go_wdata, go_be, go_tag  |          |
+ requester 1   --req/ack-->|        |    go_wdata, go_be          |          |
      ...                   |  dmac  |---------------------------->| sram_ctl |<===> SRAM
  requester N-1 --req/ack-->|        |<----------------------------|          |
-     ^                     +--------+  start_next, rvalid, rtag   +----------+
+     ^                     +--------+  start_next, rvalid         +----------+
      |  rvalid_o[k]             ^                                   |    |
      +--------------------------+------------- rdata (to all) ------+    |
                                 |                                        |
@@ -66,8 +66,7 @@ Requester k's signals are bit k of a 1-bit-per-requester port, or field k of a w
 | `rvalid_o` | out | N | Read data for requester k is on the SRAM controller's `rdata` | 1 clock |
 | `go` | out | 1 | A cycle starts at the next edge | Combinational, in the clock of `start_next` |
 | `go_we`, `go_addr`, `go_wdata`, `go_be` | out | 1, AW, DW, DW/8 | The winner's cycle; all 0 with no winner | With `go` |
-| `go_tag` | out | TW | The winner's number | With `go` |
-| `rvalid`, `rtag` | in | 1, TW | Read data back from `sram_ctl.v`, and whose it is | – |
+| `rvalid` | in | 1 | Read data is on `rdata`, from `sram_ctl.v`: the data of the read issued `RD_DELAY` clocks before | – |
 
 The read data itself (`rdata`) goes from `sram_ctl.v` to every requester directly. Only the valid lines pass through the scheduler.
 
@@ -75,18 +74,18 @@ The read data itself (`rdata`) goes from `sram_ctl.v` to every requester directl
 
 | Name | Default | Meaning |
 |------|---------|---------|
-| `N` | 7 | Requesters. 1 or more; at most 8 with `sram_ctl.v` as it is (its tag is 3 bits) |
+| `N` | 7 | Requesters. 1 or more |
 | `S` | 5 | Slots in the plan. 1 or more |
 | `AW` | 21 | Word address width |
 | `DW` | 16 | Data width, a multiple of 8 |
 | `SW` | clog2(S), at least 1 | Width of `next_slot`. Leave it to the default |
-| `TW` | clog2(N), at least 1 | Width of `go_tag` and `rtag`. Leave it to the default |
+| `RD_DELAY` | 4 | Clocks from a cycle's issue edge to the edge at which its read data is taken; `rvalid` is high in the last of them. 4 for `sram_ctl.v` |
 
 ## 4. Behaviour
 
 ### 4.1 Numbers
 
-A requester's number is its priority: wherever two requesters meet in the same rule, the lower number wins. The number is also its tag on `go_tag` and `rtag`.
+A requester's number is its priority: wherever two requesters meet in the same rule, the lower number wins.
 
 So the machine chooses the order of its requesters by the numbers it gives them. For example, both machines today would number them so:
 
@@ -178,7 +177,7 @@ One column per clock, with S = 5 and `next_slot` from `next_cycle`. Requester 4 
  next_slot        .    0    .    1    .    2    .    3
  req[4]           1    1    1    0    0    0    0    0
  req[0]           0    0    1    1    1    0    0    0
- go_tag           .    4    .    0    .    .    .    .     combinational, in this clock
+ winner           .    4    .    0    .    .    .    .     combinational, in this clock
  ack[4]           0    0    1    0    0    0    0    0
  ack[0]           0    0    0    0    1    0    0    0
  rvalid_o[4]      0    0    0    0    0    1    0    0
@@ -187,7 +186,7 @@ One column per clock, with S = 5 and `next_slot` from `next_cycle`. Requester 4 
 
 - **Decision.** Combinational, in each clock with `start_next` high. `go` and the `go_*` outputs are valid in that clock, and `sram_ctl.v` takes them at the edge that ends it (the issue edge E).
 - **Ack.** Registered: high for the one clock after E. A requester drops `req`, or puts up its next request, on seeing the ack. The next decision is a clock after the ack, so a requester that puts up a new request at once can have every cycle.
-- **Read data.** `rvalid` and the tag come from `sram_ctl.v` in the clock from E + 30 to E + 40 ns; `rvalid_o[k]` is `rvalid` with the tag decoded, combinationally. The requester takes `rdata` at E + 40, 4 clocks after the issue.
+- **Read data.** The scheduler keeps the number of each cycle's winner in a shift register `RD_DELAY` clocks long (the number of a cycle with no winner, or of a write, is kept too, but no `rvalid` comes for it). `rvalid` comes from `sram_ctl.v` in the clock from E + 30 to E + 40 ns, the last of the `RD_DELAY` = 4 clocks; `rvalid_o[k]` is `rvalid` for the number at the end of the shift register, combinationally. The requester takes `rdata` at E + 40, 4 clocks after the issue.
 - **Writes.** No valid line. The write is done on the pins at E + 25 ns. A requester's reads and writes are done in the order it was given them.
 
 ### 4.6 What the plan guarantees
@@ -228,7 +227,8 @@ The logic is in three parts, all combinational:
 
 1. **The slot.** A mux picks the owner mask and the lock bit of `next_slot` from the plan.
 2. **The winner.** Five masks (locked owners, urgent, owners, high, any), each ANDed with `req`. The lowest set bit of each is `m & (~m + 1)`. A priority choice between the five gives the winner as a one-hot mask.
-3. **The cycle.** An AND-OR mux, as the winner is one-hot: each requester's address, data, byte enables and write flag ANDed with its winner bit, then ORed together. The tag is the winner's number.
+3. **The cycle.** An AND-OR mux, as the winner is one-hot: each requester's address, data, byte enables and write flag ANDed with its winner bit, then ORed together.
+4. **The read delay.** The winner's number (clog2(N) bits) through a shift register `RD_DELAY` long, then decoded into `rvalid_o`. On a 7-series part it maps to one SRL16 a bit.
 
 The longest path is from `next_slot` or a request through the slot mux, the lowest-bit pick and the choice to the address mux. It has a full clock.
 
@@ -236,8 +236,8 @@ Inputs tied to constants fold away: a read-only requester's `we`, `wdata` and `b
 
 | Build | LUTs | Flip-flops |
 |-------|------|------------|
-| The Z80 plan as constants, no high bits | 170 | 7 |
-| A programmable plan (ports, a register outside), high bits on the copper and DMA engine | 208 | 7 |
+| The Z80 plan as constants, no high bits | 170, and 3 SRL16 | 7 |
+| A programmable plan (ports, a register outside), high bits on the copper and DMA engine | 208, and 3 SRL16 | 7 |
 
 Most of it is the 21-bit address and 16-bit data mux. The plan register itself (S×N + S bits, 40 for N = 7, S = 5) is in the machine.
 
@@ -247,6 +247,7 @@ Most of it is the 21-bit address and 16-bit data mux. The plan register itself (
 - **Owners and priority.** A pure priority order lets the requesters at the top starve those at the bottom, and makes CPU timing depend on what the display and DMA engine are doing. Owned slots give each requester a floor that is easy to work out (4.6). Spare cycles go by priority, so nothing is wasted.
 - **Several owners in a slot.** One mask per slot lets requesters share a slot (layers and sprites, for example), with the lower number first.
 - **Locks.** A requester that cannot be held off must have its slots even when another is urgent. Without a lock, urgent requests may take any slot, which keeps their wait at its least.
+- **No tag.** The memory controller's read latency is fixed, so the scheduler, which knows who got each cycle, also knows whose read data comes back. The controller passes no tag, and nothing limits the number of requesters.
 - **No deadlines.** The first version compared the layers' and sprites' deadlines to pick between them. The generic version picks by number instead, which needs no comparators. Each requester still uses its own deadline to decide when to raise `urgent`.
 - **What changed from the first version.** That version had fixed channels (CPU, layers, sprites, audio, copper, DMA engine, test port), fixed cycle masks as parameters, a `CPU_FIRST` mode, a "nasty" copper level and a HIGH mode in which a DMA engine job took the CPU's cycle but left it 1 in 2, 4 or 8 of them. The plan register replaces the modes: a machine makes the copper or the DMA engine owner of the CPU's slot while the job runs. Both machines agreed to drop the share.
 
@@ -255,7 +256,7 @@ Most of it is the 21-bit address and 16-bit data mux. The plan register itself (
 The wrapper (or the machine's top level) must:
 
 - **Choose N and S,** and number its requesters by priority (4.1).
-- **Connect `sram_ctl.v`.** Drive `start_next` from it and `rvalid`, `rtag` back from it; give it `go_*`. Give `rdata` from it to every requester. Its tag is 3 bits: with TW under 3, pad `go_tag` with zeros on the way in and take the low TW bits of `rtag` on the way back.
+- **Connect `sram_ctl.v`.** Drive `start_next` and `rvalid` from it; give it `go_*`. Give `rdata` from it to every requester. Leave `RD_DELAY` at 4, the controller's read latency.
 - **Give the slot number** (4.3): `next_cycle` from `sram_ctl.v` for S = 5, or a counter.
 - **Give a slot plan.** Drive `slot_owner` and `slot_lock` from a register with the machine's default plan as its reset value, or tie them to constants. Keep any slots a requester cannot do without locked in every plan software may write.
 - **Tie off what is unused.** A requester that only reads: `we`, `wdata` and `be` 0. One that is never urgent or high: those bits 0. Leave unused acks and valid lines open. An open `req` bit is X in simulation, and so is every decision.
@@ -266,14 +267,15 @@ The wrapper (or the machine's top level) must:
 
 | Test | What it checks |
 |------|----------------|
-| `test/dmac` | Run for five sizes: N, S = 7, 5 (the machines), 1, 1, 8, 8, 3, 6 and 5, 3. Random requests, urgent and high flags, and a random plan (one owner, several or none per slot, random locks) that changes every few hundred clocks, also mid-round, for 300,000 clocks each. `next_slot` takes every value, past the plan's end too. Every clock: the winner, `go`, the tag, address, write flag, byte enables and data against a model of the rules written separately (each rule as a walk over the requesters); the acks a clock later; the valid lines against `rtag`. Counters make sure each rule came up: a locked owner over an urgent request, an urgent request over an owner, an owner, an owner that is not the lowest number asking, a high request over a lower number, any request, a slot past the plan's end, an idle cycle |
+| `test/dmac` | Run for six sizes: N, S = 7, 5 (the machines), 1, 1, 8, 8, 3, 6, 5, 3 and 12, 5. Random requests, urgent and high flags, and a random plan (one owner, several or none per slot, random locks) that changes every few hundred clocks, also mid-round, for 300,000 clocks each. `next_slot` takes every value, past the plan's end too. Every clock: the winner, `go`, the address, write flag, byte enables and data against a model of the rules written separately (each rule as a walk over the requesters); the acks a clock later; and `rvalid_o`, with a stand-in memory that raises `rvalid` 4 clocks after each read it was given. Counters make sure each rule came up: a locked owner over an urgent request, an urgent request over an owner, an owner, an owner that is not the lowest number asking, a high request over a lower number, any request, a slot past the plan's end, an idle cycle |
+| `test/dmac`, `tb_dmac_sram` | The scheduler with the real `sram_ctl.v` and a model of the SRAM behind its pad registers. Three requesters read and write 16 words at random for 100,000 clocks. Each `rvalid_o` pulse must go to a requester with a read in flight, in order, with the word a shadow copy of the memory says. This checks that `RD_DELAY` matches the controller's latency; with `RD_DELAY` at 3 it fails at once |
 | The machines' system tests | Each machine's copper, sprite, video and CPU tests on its own plans. The bandwidth and deadline checks there are the real test of a plan |
 
 ## 7. Open points
 
 | # | Point |
 |---|-------|
-| D1 | `sram_ctl.v` carries a 3-bit tag, so N is at most 8. More requesters need a wider tag there |
+| D1 | A memory whose read latency varies (SDRAM, say) would need a tag again, or a FIFO of winners. Both memories in use today have a fixed latency |
 | D2 | `sprite_fetch.v` still gives a deadline (`mem_deadline`). The scheduler no longer uses it; the sprite fetch's urgent flag is what counts |
 | D3 | Rule 4 puts all high requests ahead of all others. In the first version a high DMA engine went ahead of the CPU but behind the display and audio. With the numbers of 4.1 a high DMA engine now also goes ahead of the display in spare cycles; the display keeps its owned slots and its urgent requests |
 | D4 | The size figures are from Yosys; the machines' Vivado builds are the ones that count |

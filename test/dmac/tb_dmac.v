@@ -5,7 +5,8 @@
 // now and then in the middle of a round). next_slot also takes values past
 // the plan's end. Each cycle's winner, address, data, write flag, byte
 // enables and tag are checked against a model of the rules, the acks a
-// clock later, and the read-valid lines against the tag. Counters check
+// clock later, and the read-valid lines: the memory's rvalid comes 4 clocks
+// after each read issued, as sram_ctl's does, and must go to its reader. Counters check
 // that every rule came up.
 module tb_dmac;
     parameter N = 7;
@@ -27,22 +28,20 @@ module tb_dmac;
     reg  [N*DW-1:0]  wdata;
     reg  [N*BW-1:0]  be;
     reg              rvalid;
-    reg  [TW-1:0]    rtag;
 
     wire [N-1:0]     ack, rv;
     wire             go, go_we;
     wire [AW-1:0]    go_addr;
     wire [DW-1:0]    go_wdata;
     wire [BW-1:0]    go_be;
-    wire [TW-1:0]    go_tag;
 
-    dmac #(.N(N), .S(S), .AW(AW), .DW(DW)) dut (
+    dmac #(.N(N), .S(S), .AW(AW), .DW(DW), .RD_DELAY(4)) dut (
         .clk(clk), .rst(rst), .start_next(start_next), .next_slot(next_slot),
         .slot_owner(slot_owner), .slot_lock(slot_lock),
         .req(req), .urgent(urgent), .high(high), .we(we), .addr(addr), .wdata(wdata), .be(be),
         .ack(ack), .rvalid_o(rv),
-        .go(go), .go_we(go_we), .go_addr(go_addr), .go_wdata(go_wdata), .go_be(go_be), .go_tag(go_tag),
-        .rvalid(rvalid), .rtag(rtag));
+        .go(go), .go_we(go_we), .go_addr(go_addr), .go_wdata(go_wdata), .go_be(go_be),
+        .rvalid(rvalid));
 
     // ---------------------------------------------------------------- the model
     // Written as a walk over the requesters for each rule in turn: the
@@ -72,7 +71,8 @@ module tb_dmac;
     // ---------------------------------------------------------------- checks
     integer errors = 0, checks = 0, last_win = -1;
     integer n_lock = 0, n_urg_over_own = 0, n_own = 0, n_own_pick = 0, n_high = 0,
-            n_any = 0, n_past_end = 0, n_idle = 0;
+            n_any = 0, n_past_end = 0, n_idle = 0, n_reads = 0;
+    integer rd_hist [0:3];
     task fail(input [8*16-1:0] what, input [63:0] got, input [63:0] want);
         begin
             errors = errors + 1;
@@ -85,16 +85,19 @@ module tb_dmac;
         checks = checks + 1;
         if (go !== (m_win >= 0)) fail("go", go, m_win >= 0);
         if (m_win >= 0) begin
-            if (go_tag !== m_win[TW-1:0]) fail("tag", go_tag, m_win);
             if (go_addr !== addr[m_win*AW +: AW]) fail("address", go_addr, addr[m_win*AW +: AW]);
             if ({go_we, go_be, go_wdata} !== {we[m_win], be[m_win*BW +: BW], wdata[m_win*DW +: DW]})
                 fail("write", {go_we, go_be, go_wdata}, {we[m_win], be[m_win*BW +: BW], wdata[m_win*DW +: DW]});
         end
         // The acks: one clock after the cycle was given
         if (ack !== ((last_win < 0) ? {N{1'b0}} : ({{(N-1){1'b0}}, 1'b1} << last_win))) fail("acks", ack, last_win);
-        // Read data back by tag
-        for (i = 0; i < N; i = i + 1)
-            if (rv[i] !== (rvalid && rtag == i)) fail("rvalid", rv, rtag);
+        // Read data back to the reader of 4 clocks ago (rd_hist[3]), then
+        // move the history on: rd_hist[0] is this clock's read, or -1
+        if (rv !== ((rd_hist[3] < 0) ? {N{1'b0}} : ({{(N-1){1'b0}}, 1'b1} << rd_hist[3])))
+            fail("rvalid", rv, rd_hist[3]);
+        if (rd_hist[3] >= 0) n_reads = n_reads + 1;
+        rd_hist[3] = rd_hist[2]; rd_hist[2] = rd_hist[1]; rd_hist[1] = rd_hist[0];
+        rd_hist[0] = (m_win >= 0 && !we[m_win]) ? m_win : -1;
         last_win = m_win;
         // What came up
         if (start_next) begin
@@ -118,7 +121,7 @@ module tb_dmac;
         next_slot  <= r[15:8];                     // all values, past the end too
         for (j = 0; j < N; j = j + 1) begin
             r = $random;
-            req[j]    <= r[0] | r[1];
+            req[j]    <= (N > 8) ? r[0] & r[1] : r[0] | r[1];   // rarer with many, so idle cycles still come up
             urgent[j] <= r[2] & r[3] & r[4];
             high[j]   <= r[5] & r[6];
             we[j]     <= r[7];
@@ -126,9 +129,8 @@ module tb_dmac;
             wdata[j*DW +: DW] <= $random;
             be[j*BW +: BW]    <= $random;
         end
-        r = $random;
-        rvalid <= r[0];
-        rtag   <= r[8:4];
+        // The memory: rvalid in the 4th clock after a read's decision
+        rvalid <= (rd_hist[3] >= 0);
         // A new slot plan now and then (any clock, so also mid-round)
         if ({$random} % 300 == 0) begin
             for (j = 0; j < S; j = j + 1) begin
@@ -144,6 +146,8 @@ module tb_dmac;
     initial begin
         slot_owner = {S*N{1'b0}};
         slot_lock  = {S{1'b0}};
+        rvalid     = 1'b0;
+        rd_hist[0] = -1; rd_hist[1] = -1; rd_hist[2] = -1; rd_hist[3] = -1;
         repeat (4) @(posedge clk);
         @(negedge clk);
         rst = 1'b0;
@@ -152,10 +156,10 @@ module tb_dmac;
         $display("N=%0d S=%0d: %0d clocks checked", N, S, checks);
         $display("  locked owner over urgent %0d, urgent over owner %0d, owner %0d (not the lowest asking %0d)",
                  n_lock, n_urg_over_own, n_own, n_own_pick);
-        $display("  high over a lower number %0d, any %0d, past the plan's end %0d, idle %0d",
-                 n_high, n_any, n_past_end, n_idle);
+        $display("  high over a lower number %0d, any %0d, past the plan's end %0d, idle %0d, reads back %0d",
+                 n_high, n_any, n_past_end, n_idle, n_reads);
         // Cases that need more than one requester, or slot numbers past the end
-        if (n_own == 0 || n_any == 0 || n_idle == 0 ||
+        if (n_own == 0 || n_any == 0 || n_idle == 0 || n_reads == 0 ||
             (N > 1 && (n_lock == 0 || n_urg_over_own == 0 || n_own_pick == 0 || n_high == 0)) ||
             ((1 << SW) > S && n_past_end == 0)) begin
             errors = errors + 1;

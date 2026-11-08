@@ -2,7 +2,7 @@
 
 Status: **draft**
 
-The SRAM controller runs the pins of an asynchronous 10 ns SRAM: one 16-bit read or write every 20 ns, at any address, in any mix. It does not choose who gets a cycle. A scheduler in the machine (the DMA scheduler, `dmac.v` in both machines today) gives it one request per memory cycle, with a tag; the controller hands read data back with the same tag 40 ns after the issue.
+The SRAM controller runs the pins of an asynchronous 10 ns SRAM: one 16-bit read or write every 20 ns, at any address, in any mix. It does not choose who gets a cycle. A scheduler in the machine (the DMA scheduler, `dmac.v` in both machines today) gives it one request per memory cycle; the controller hands read data back 40 ns after the issue, with `rvalid`. The latency is fixed, so the scheduler knows whose read it is: the controller carries no tag.
 
 File: `rtl/sram_ctl.v`.
 
@@ -36,11 +36,9 @@ E is the edge at which a cycle is issued (section 4.1). "Pins" means the SRAM pi
 | `go_addr` | in | 21 | Word address (byte address bits 21–1) | With `go` |
 | `go_wdata` | in | 16 | Write data. Bits 15–8 are the upper byte (D15–D8) | With `go`, writes only |
 | `go_be` | in | 2 | Byte enables for a write: bit 1 = upper byte, bit 0 = lower byte. Ignored on a read | With `go`, writes only |
-| `go_tag` | in | 3 | Whose cycle this is; comes back with the read data | With `go` |
 | `start_next` | out | 1 | A new memory cycle starts at the next edge (`sc` is odd) | Combinational from `sc` |
 | `next_cycle` | out | 3 | The number in the slot (0–4) of the cycle that starts at the next edge | Combinational from `sc`; valid only while `start_next` is 1 |
-| `rvalid` | out | 1 | `rdata` holds a read's data, for `rtag`. High for one clock | E + 30 to E + 40 |
-| `rtag` | out | 3 | The tag of that read | With `rvalid` |
+| `rvalid` | out | 1 | `rdata` holds the data of the read issued at E. High for one clock | E + 30 to E + 40 |
 | `rdata` | out | 16 | Read data, the whole word. Changes only when a read ends | Captured at E + 30; held until the next read ends |
 | `sram_a` | out | 21 | Address, to the pad flip-flops | Set at E; pins E + 10 |
 | `sram_ce_n` | out | 1 | Chip select, low during a cycle; high in an idle cycle | Set at E; pins E + 10 |
@@ -53,7 +51,7 @@ E is the edge at which a cycle is issued (section 4.1). "Pins" means the SRAM pi
 
 ## 3. Parameters
 
-None. The widths are fixed: 21 address bits (4 MB), 3 tag bits (8 tags, of which a scheduler may keep 0 for "nobody"). A machine with less memory ties or drops the top address bits outside the core; both machines' 2 MB builds do this (open point S3).
+None. The widths are fixed: 21 address bits (4 MB). A machine with less memory ties or drops the top address bits outside the core; both machines' 2 MB builds do this (open point S3).
 
 ## 4. Behaviour
 
@@ -83,7 +81,7 @@ The controller holds at most two cycles: the one starting on the pins and the on
 | E (issue) | Address, /CE low, both byte selects low into the outputs. /OE: high, then low (`_r` 1, `_f` 0). /WE high. Data enable off | Address, /CE low, byte selects from `go_be`, data into `sram_dq_o`. /OE high. /WE: high, then low (`_r` 1, `_f` 0). Data enable: off, then on |
 | E + 10 | /OE low for both halves | /WE: low, then high (`_r` 0, `_f` 1). Data enable on for both halves |
 | E + 20 | The next cycle's issue. The controller notes that this read's data is due | The next cycle's issue |
-| E + 30 | `rdata` takes `sram_dq_i`; `rvalid` 1 and `rtag` set for one clock | – |
+| E + 30 | `rdata` takes `sram_dq_i`; `rvalid` 1 for one clock | – |
 
 At an issue edge with `go` 0 the outputs go idle: /CE, the byte selects, /OE and /WE high, data enable off.
 
@@ -107,18 +105,18 @@ The margins against the IS61WV204816BLL-10 datasheet are worked out in retro-z80
 
 ### 4.4 Read data
 
-A read issued at E is captured at E + 30, the edge at which the next cycle's address reaches the pins; the SRAM's output hold (tOHA) and the pad delays cover the hold. `rvalid` and `rtag` are high from E + 30 to E + 40, so logic in the system clock takes the data at E + 40: 40 ns, or 4 clocks, after the issue. `rdata` keeps its value until the next read ends, so a channel may take it later, but only `rvalid` with its own `rtag` says which read it was.
+A read issued at E is captured at E + 30, the edge at which the next cycle's address reaches the pins; the SRAM's output hold (tOHA) and the pad delays cover the hold. `rvalid` is high from E + 30 to E + 40, so logic in the system clock takes the data at E + 40: 40 ns, or 4 clocks, after the issue. `rdata` keeps its value until the next read ends, so a channel may take it later. Whose read it was, the scheduler knows: it is the cycle it gave 4 clocks before (`dmac.v`'s `RD_DELAY`).
 
 A write has no `rvalid`. It is done on the pins at E + 25.
 
 ### 4.5 Reset
 
-`rst` makes the outputs idle at the next edge and forgets a read in flight (no `rvalid` comes for it). A write on the pins when reset comes has /WE cut short, so that word may be wrong (open point S4). `rdata` and `rtag` are not reset.
+`rst` makes the outputs idle at the next edge and forgets a read in flight (no `rvalid` comes for it). A write on the pins when reset comes has /WE cut short, so that word may be wrong (open point S4). `rdata` is not reset.
 
 ## 5. How a machine uses it
 
 - **A slot counter.** `sc` must count 0–9 and wrap, one step per clock. Values 10–15 are never allowed.
-- **A scheduler.** It decides, in each clock with `start_next` 1, who gets the cycle `next_cycle`, and drives `go` and the `go_*` inputs for it. It tells the winner it has been granted at the issue edge, so the winner can drop or change its request. It picks the tags, and sends each `rvalid` to the channel whose tag is `rtag`.
+- **A scheduler.** It decides, in each clock with `start_next` 1, who gets the cycle `next_cycle`, and drives `go` and the `go_*` inputs for it. It tells the winner it has been granted at the issue edge, so the winner can drop or change its request. It keeps who got each cycle for 4 clocks and sends each `rvalid` to the channel whose read it is.
 - **Pad registers for the outputs.** `sram_a`, `sram_ce_n`, `sram_ub_n`, `sram_lb_n` and `sram_dq_o` each go through one flip-flop placed in the I/O pad (`IOB = TRUE`). The `_r`/`_f` pairs each go through a DDR output register (`oddr`, platform spec), with power-up value 1 (`INIT = 1`) so the SRAM is off and the bus undriven before the first clock. The data bus is 16 `IOBUF`s with the pad flip-flop as I and the DDR enable as T.
 - **The read register in the input pads.** `rdata` must be placed in the input pad flip-flops, by a constraint on the cell (both machines: `set_property IOB TRUE` on `.../mem/rdata_reg*`). Without it the capture at E + 30 has the fabric delay to cover as well, and the timing in section 4.3 no longer holds.
 - **The pins in simulation.** The same pad registers, with a small clock-to-out delay (1 ns in both machines' testbenches), the behavioural `oddr` (platform spec), and `sim/sram_model.v`.
@@ -132,7 +130,7 @@ There is no unit test in `test/` yet (open point S2). The controller is tested i
 | Test | Machine | What it covers |
 |------|---------|----------------|
 | Whole-system testbench (`tb.v`) with `sim/sram_model.v`, datasheet checks on | Both | Every cycle the CPU, the display and a busy DMA port make, through the pad registers and `oddr`: set-up, hold, pulse widths, address change under /WE, bus contention, undefined data written |
-| The DMA port's random word reads and writes against a copy (`+dma`) | Both | Reads and writes back to back, in every mix, from every cycle number; read data and tags |
+| The DMA port's random word reads and writes against a copy (`+dma`) | Both | Reads and writes back to back, in every mix, from every cycle number; read data back to the right channel |
 | The boot ROM's memory self-test, a 2 MB build | retro-z80 | Data lines, address lines, byte writes, the 2 MB mirror |
 | The board | Both | The real SRAM and pads at 100 MHz, every boot |
 
@@ -141,7 +139,7 @@ There is no unit test in `test/` yet (open point S2). The controller is tested i
 | # | Item |
 |---|------|
 | S1 | Check the 20 ns cycles against the IS61WV204816BLL-10 datasheet with the pad and board delays of the KS2 and KS3. The tight points are tHZOE on a write after a read and tPWE. A fallback is for the scheduler not to issue a write straight after a read; it needs no change here |
-| S2 | Proposed: a unit test `test/sram_ctl/` with the pad registers, the behavioural `oddr` and `sim/sram_model.v`: every pair of read and write back to back, idle cycles between, byte writes, `rvalid`/`rtag` at E + 30 to E + 40 for each cycle number, `go` ignored while `start_next` is 0, reset during a read and during a write |
-| S3 | The widths are fixed (21 address bits, 3 tag bits). A parameter for each could come if a machine needs more channels or less memory |
+| S2 | Proposed: a unit test `test/sram_ctl/` with the pad registers, the behavioural `oddr` and `sim/sram_model.v`: every pair of read and write back to back, idle cycles between, byte writes, `rvalid` at E + 30 to E + 40 for each cycle number, `go` ignored while `start_next` is 0, reset during a read and during a write |
+| S3 | The address width is fixed (21 bits). A parameter could come if a machine needs less memory. (The 3-bit tag is gone: the scheduler routes read data itself, so the controller sets no limit on channels) |
 | S4 | A reset during a write cuts /WE short. Proposed: let a write that is on the pins finish, or document that the system reset may corrupt the word being written |
 | S5 | The file's header comment names a machine's spec number ("spec 5") and a machine's CPU path (`bus_if`, fx68k). Proposed: point to this spec instead |

@@ -22,17 +22,16 @@ module sram_ctl (
     input  wire [3:0]  sc,          // timebase: edge index within the slot
 
     // The cycle the scheduler (dmac.v) gives out, starting at the next edge
-    // where a new cycle starts (sc odd); the tag comes back with read data
+    // where a new cycle starts (sc odd). Read data comes back with rvalid
+    // 40 ns after the issue; the scheduler knows whose it is
     input  wire        go,
     input  wire        go_we,
     input  wire [21:1] go_addr,
     input  wire [15:0] go_wdata,
     input  wire [1:0]  go_be,       // [1] = upper byte (D15-8), [0] = lower byte
-    input  wire [2:0]  go_tag,
     output wire        start_next,  // a new cycle starts at the next edge
     output wire [2:0]  next_cycle,  // ... and this is its number in the slot (0-4)
-    output reg         rvalid,      // 1 clock: rdata holds read data for rtag
-    output reg  [2:0]  rtag,
+    output reg         rvalid,      // 1 clock: rdata holds a read's data
     output reg  [15:0] rdata,
 
     // SRAM pins (before the DDR output registers)
@@ -52,17 +51,14 @@ module sram_ctl (
     assign next_cycle = (sc == 4'd9) ? 3'd0 : sc[3:1] + 1'b1;
 
     reg        owner;      // a cycle is in progress
-    reg  [2:0] tag;        // ... for this channel
-    reg        cur_we;     // the cycle in progress is a write
-    reg  [2:0] prev_tag;   // the previous cycle, whose read data is on the pins now
-    reg        prev_rd;
+    reg        cur_we;     // ... and it is a write
+    reg        prev_rd;    // the previous cycle, whose data is on the pins now, is a read
 
     always @(posedge clk) begin
         rvalid <= 1'b0;
 
         if (rst) begin
             owner       <= 1'b0;
-            tag         <= 3'd0;
             cur_we      <= 1'b0;
             sram_ce_n   <= 1'b1;
             sram_ub_n   <= 1'b1;
@@ -72,17 +68,14 @@ module sram_ctl (
             sram_dq_t_r <= 1'b1;  sram_dq_t_f <= 1'b1;
             sram_a      <= 21'd0;
             sram_dq_o   <= 16'd0;
-            prev_tag    <= 3'd0;
             prev_rd     <= 1'b0;
         end else if (start_next) begin
             // The cycle in progress moves to its second clock on the pins
-            prev_tag <= tag;
             prev_rd  <= owner && !cur_we;
 
             // Clock 0 of the next cycle
             if (go) begin
                 owner     <= 1'b1;
-                tag       <= go_tag;
                 cur_we    <= go_we;
                 sram_a    <= go_addr[21:1];
                 sram_ce_n <= 1'b0;
@@ -102,7 +95,6 @@ module sram_ctl (
                 end
             end else begin
                 owner       <= 1'b0;
-                tag         <= 3'd0;
                 cur_we      <= 1'b0;
                 sram_ce_n   <= 1'b1;
                 sram_ub_n   <= 1'b1;
@@ -116,7 +108,6 @@ module sram_ctl (
             if (prev_rd) begin
                 rdata  <= sram_dq_i;
                 rvalid <= 1'b1;
-                rtag   <= prev_tag;
             end
             // Clock 1 of the cycle in progress
             if (owner && cur_we) begin

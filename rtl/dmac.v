@@ -4,7 +4,9 @@
 // N generic requesters, numbered 0 to N-1. A lower number goes first
 // wherever two requesters tie. Each holds req until ack (a 1-clock pulse
 // the clock after the cycle is given); read data comes back on the shared
-// rdata with that requester's rvalid line.
+// rdata with that requester's rvalid line. The scheduler keeps the number
+// of each cycle's winner for RD_DELAY clocks, so it knows whose read data
+// the memory controller's rvalid is for: the controller needs no tag.
 //
 // The slot plan: S slots, numbered 0 to S-1, one memory cycle each. The
 // machine says which slot the next cycle is (next_slot). For each slot,
@@ -23,12 +25,14 @@
 // A slot whose owners don't ask goes to rule 4, so no cycle is wasted.
 // No registers but the acks.
 module dmac #(
-    parameter N  = 7,                 // requesters, 1 to 2**TW
+    parameter N  = 7,                 // requesters, 1 or more
     parameter S  = 5,                 // slots in the plan
     parameter AW = 21,                // word address width
     parameter DW = 16,                // data width (a multiple of 8)
-    parameter SW = (S > 1) ? $clog2(S) : 1,   // next_slot width
-    parameter TW = (N > 1) ? $clog2(N) : 1    // tag width: the requester's number
+    parameter RD_DELAY = 4,           // clocks from a cycle's issue edge to the
+                                      // edge at which its read data is taken (rvalid
+                                      // is high in the last of them); 4 for sram_ctl
+    parameter SW = (S > 1) ? $clog2(S) : 1    // next_slot width
 ) (
     input  wire              clk,
     input  wire              rst,
@@ -60,10 +64,10 @@ module dmac #(
     output wire [AW-1:0]     go_addr,
     output wire [DW-1:0]     go_wdata,
     output wire [DW/8-1:0]   go_be,
-    output wire [TW-1:0]     go_tag,
-    input  wire              rvalid,
-    input  wire [TW-1:0]     rtag
+    input  wire              rvalid     // read data is on rdata: whose, the scheduler knows
 );
+    localparam TW = (N > 1) ? $clog2(N) : 1;   // width of a requester's number
+
     // The lowest set bit of a mask, alone
     function [N-1:0] first;
         input [N-1:0] m;
@@ -123,7 +127,6 @@ module dmac #(
     end
 
     assign go       = |win;
-    assign go_tag   = tag;
     assign go_we    = w_we;
     assign go_addr  = w_addr;
     assign go_wdata = w_wdata;
@@ -132,11 +135,24 @@ module dmac #(
     always @(posedge clk)
         ack <= rst ? {N{1'b0}} : win;
 
+    // Each cycle's winner, kept until its read data comes back. A cycle
+    // with no winner, or a write, keeps a number too, but the memory
+    // controller gives no rvalid for it.
+    reg  [RD_DELAY*TW-1:0] kept;
+    wire [TW-1:0]          back = kept[RD_DELAY*TW-1 -: TW];
+    generate
+        if (RD_DELAY > 1) begin : shift
+            always @(posedge clk) kept <= {kept[(RD_DELAY-1)*TW-1:0], tag};
+        end else begin : one
+            always @(posedge clk) kept <= tag;
+        end
+    endgenerate
+
     // Read data back to its requester (rdata itself is shared)
     genvar g;
     generate
         for (g = 0; g < N; g = g + 1) begin : rv
-            assign rvalid_o[g] = rvalid && rtag == g;
+            assign rvalid_o[g] = rvalid && back == g;
         end
     endgenerate
 endmodule

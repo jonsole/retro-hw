@@ -7,13 +7,13 @@
 | Part | What it does |
 |------|--------------|
 | A slot counter | `sc`, 0–9, one step per 100 MHz clock |
-| A scheduler | In each clock with `start_next` 1, picks who gets cycle `next_cycle` and drives `go` and `go_*`; sends `rvalid` to the channel named by `rtag` |
+| A scheduler | In each clock with `start_next` 1, picks who gets cycle `next_cycle` and drives `go` and `go_*`; sends `rvalid` to the channel whose read was issued 4 clocks before |
 | Pad registers | One flip-flop in the pad for the address, /CE, the byte selects and the write data; an `oddr` for /OE, /WE and the data enable |
 | A constraint | Puts `rdata` in the input pad flip-flops |
 
 ## A minimal instantiation
 
-One channel (the CPU) that always gets the cycle it asks for, tag 1:
+One channel (the CPU) that always gets the cycle it asks for. With one channel every `rvalid` is the CPU's; with more, the scheduler (`dmac.v`) works out whose it is:
 
 ```verilog
 // Slot counter
@@ -23,13 +23,12 @@ always @(posedge clk100) sc <= (rst || sc == 4'd9) ? 4'd0 : sc + 4'd1;
 wire        start_next;
 wire [2:0]  next_cycle;
 wire        rvalid;
-wire [2:0]  rtag;
 wire [15:0] rdata;
 
 // The cycle starts at the next edge if the CPU asks now
 wire go     = start_next && cpu_req;
 wire cpu_ack = go;                          // granted at the issue edge
-wire cpu_rvalid = rvalid && rtag == 3'd1;   // data in rdata, take it at this edge
+wire cpu_rvalid = rvalid;                   // data in rdata, take it at this edge
 
 wire [20:0] a;  wire ce_n, ub_n, lb_n, oe_r, oe_f, we_r, we_f, t_r, t_f;
 wire [15:0] dq_o, dq_i;
@@ -37,9 +36,9 @@ wire [15:0] dq_o, dq_i;
 sram_ctl mem (
     .clk(clk100), .rst(rst), .sc(sc),
     .go(go), .go_we(cpu_we), .go_addr(cpu_addr), .go_wdata(cpu_wdata),
-    .go_be(cpu_be), .go_tag(3'd1),
+    .go_be(cpu_be),
     .start_next(start_next), .next_cycle(next_cycle),
-    .rvalid(rvalid), .rtag(rtag), .rdata(rdata),
+    .rvalid(rvalid), .rdata(rdata),
     .sram_a(a), .sram_ce_n(ce_n), .sram_ub_n(ub_n), .sram_lb_n(lb_n),
     .sram_oe_n_r(oe_r), .sram_oe_n_f(oe_f), .sram_we_n_r(we_r), .sram_we_n_f(we_f),
     .sram_dq_o(dq_o), .sram_dq_t_r(t_r), .sram_dq_t_f(t_f), .sram_dq_i(dq_i)
