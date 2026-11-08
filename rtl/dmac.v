@@ -1,7 +1,8 @@
 // DMA scheduler: decides who gets each 20 ns memory cycle, as the Amiga's
-// Agnus does. sram_ctl.v does the cycle itself. No registers: the copper's
-// priority and the DMA engine's HIGH mode come in as plain ports. The
-// timebase (timebase.v) and sram_ctl.v say which cycle starts next.
+// Agnus does. sram_ctl.v does the cycle itself. No registers: the slot
+// table and the priority bits come in as plain ports, so the machine holds
+// them in its own registers and can change them at any time. The timebase
+// (timebase.v) and sram_ctl.v say which cycle starts next.
 //
 // Channels, each holding req until ack (a 1-clock pulse at the edge the
 // cycle is issued); read data comes back on rdata with rvalid for that
@@ -14,42 +15,31 @@
 //   BLT   DMA engine / blitter
 //   PORT  the DMA port: a test channel, used by the simulation tests
 //
-// Every cycle of the 5 in a slot can have a default owner. A cycle its
-// owner doesn't use goes to the next in the free order, so no cycle is
-// wasted. For each cycle, the first rule that finds a request wins:
+// The slot table (slot_owner) names an owner for each of the 5 cycles in a
+// slot, 3 bits a cycle, coded as go_tag; 0 is no owner. BPL or SPR as owner
+// means the display: the one of the two that is due first. slot_lock marks
+// the cycles an urgent request may not take from their owner. For each
+// cycle, the first rule that finds a request wins:
 //
-//   0. With CPU_FIRST: in the CPU's cycles (CPU_CYCLES) a CPU request gets
-//      the cycle, and nothing overrides it: the CPU never waits.
-//   1. An urgent hard-deadline request gets the cycle, whatever it is (the
-//      CPU's too, without CPU_FIRST: its access then waits). Earliest
-//      deadline first. Then, with NASTY, the copper at priority 2 (nasty).
-//   2. The default owner: in the CPU's cycles the CPU (with HIGH, a HIGH
-//      DMA engine job may take it, below); in HARD_CYCLES the hard-deadline
-//      channels (earliest deadline first); in AUD_CYCLES audio.
-//   3. The free order: hard-deadline channels (earliest deadline first),
-//      AUD, COP, BLT, PORT; the copper at high priority (1-3) goes first.
+//   1. In a locked cycle, the owner.
+//   2. An urgent hard-deadline request, earliest deadline first.
+//   3. The owner.
+//   4. The free order: COP (with cop_high), the display (earliest deadline
+//      first), AUD, COP, BLT (with blt_high), CPU, BLT, PORT.
 //
-// The cycle masks have bit n for cycle n; each machine sets its own plan
-// (docs/spec/dmac.md). The defaults: the CPU owns cycle 0, which urgent
-// requests and the nasty copper may take; the display cycles 1 and 3;
-// audio cycle 2. Without NASTY, copper priorities 2 and 3 act as 1.
-//
-// HIGH (a DMA engine job that may take the CPU's cycle) acts only at rule
-// 2, so with CPU_FIRST it never wins: leave HIGH off then.
-module dmac #(
-    parameter [4:0] CPU_CYCLES  = 5'b00001,   // the CPU's own cycles
-    parameter [4:0] HARD_CYCLES = 5'b01010,   // the hard-deadline channels' cycles
-    parameter [4:0] AUD_CYCLES  = 5'b00100,   // audio's cycles
-    parameter       CPU_FIRST   = 0,          // 1: a CPU request in its cycle beats everything
-    parameter       NASTY       = 1,          // 1: the copper at priority 2 beats all but urgent
-    parameter       HIGH        = 1           // 1: blt_high and blt_share act
-) (
+// A cycle its owner doesn't use goes to the free order, so none is wasted.
+module dmac (
     input  wire        clk,
     input  wire        rst,
 
     // From sram_ctl: a cycle starts at the next edge, and which one
     input  wire        start_next,
     input  wire [2:0]  next_cycle,
+
+    // The slot plan: an owner for each cycle (bits 3n+2..3n for cycle n),
+    // and the cycles an urgent request may not take from their owner
+    input  wire [14:0] slot_owner,
+    input  wire [4:0]  slot_lock,
 
     // CPU
     input  wire        cpu_req,
@@ -81,7 +71,7 @@ module dmac #(
     output wire        aud_rvalid,
     input  wire        cop_req,
     input  wire [21:1] cop_addr,
-    input  wire [1:0]  cop_pri,        // the copper's priority: 0 normal, 1 high, 2 nasty (with NASTY), 3 high
+    input  wire        cop_high,       // the copper goes first in the free order
     output reg         cop_ack,
     output wire        cop_rvalid,
 
@@ -91,8 +81,7 @@ module dmac #(
     input  wire [21:1] blt_addr,
     input  wire [15:0] blt_wdata,
     input  wire [1:0]  blt_be,
-    input  wire        blt_high,       // with HIGH: may take the CPU's cycle ...
-    input  wire [1:0]  blt_share,      // ... leaving it 1 in 2, 4 or 8 of them
+    input  wire        blt_high,       // the DMA engine goes before the CPU in the free order
     output reg         blt_ack,
     output wire        blt_rvalid,
     input  wire        port_req,
@@ -123,51 +112,44 @@ module dmac #(
     wire [2:0] urg      = (spr_req && spr_urgent && !(bpl_req && bpl_urgent && bpl_deadline <= spr_deadline))
                           ? C_SPR : C_BPL;
 
-    // The free order (a copper at high priority goes first)
-    wire       cop_hi = cop_req && cop_pri != 2'd0;
-    wire [2:0] free = cop_hi   ? C_COP :
-                      hard_any ? hard :
-                      aud_req  ? C_AUD :
-                      cop_req  ? C_COP :
-                      blt_req  ? C_BLT :
-                      port_req ? C_PORT : C_NONE;
+    // The free order
+    wire [2:0] free = (cop_req && cop_high) ? C_COP :
+                      hard_any              ? hard :
+                      aud_req               ? C_AUD :
+                      cop_req               ? C_COP :
+                      (blt_req && blt_high) ? C_BLT :
+                      cpu_req               ? C_CPU :
+                      blt_req               ? C_BLT :
+                      port_req              ? C_PORT : C_NONE;
 
-    // The owners of the cycle that starts at the next edge (cycles 5-7 own nothing)
-    wire [7:0] cyc       = 8'd1 << next_cycle;
-    wire       cpu_cycle = |(cyc[4:0] & CPU_CYCLES);
-    wire       hard_cyc  = |(cyc[4:0] & HARD_CYCLES);
-    wire       aud_cyc   = |(cyc[4:0] & AUD_CYCLES);
-    wire       nasty     = (NASTY != 0) && cop_req && cop_pri == 2'd2;
-    wire       high      = (HIGH != 0) && blt_req && blt_high;
-
-    // A HIGH DMA engine job and the CPU both want the CPU's cycle: the CPU
-    // gets every 2nd, 4th or 8th of these, the engine the rest
-    reg  [2:0] shc;
-    wire [2:0] shmax    = (blt_share == 2'd0) ? 3'd1 : (blt_share == 2'd1) ? 3'd3 : 3'd7;
-    wire       cpu_turn = (shc == shmax);
-    always @(posedge clk)
-        if (rst || HIGH == 0) shc <= 3'd0;
-        else if (start_next && cpu_cycle && cpu_req && high && !urg_any && !nasty)
-            shc <= cpu_turn ? 3'd0 : shc + 1'b1;
+    // The owner of the cycle that starts at the next edge (cycles 5-7 have none)
+    wire [23:0] owners = {9'd0, slot_owner};
+    wire [7:0]  locks  = {3'd0, slot_lock};
+    wire [2:0]  owner  = owners[next_cycle * 3 +: 3];
+    wire        locked = locks[next_cycle];
+    reg        own_req;
+    reg  [2:0] own;
+    always @(*) begin
+        own = owner;
+        case (owner)
+            C_CPU:        own_req = cpu_req;
+            C_BPL, C_SPR: begin own_req = hard_any; own = hard; end
+            C_AUD:        own_req = aud_req;
+            C_COP:        own_req = cop_req;
+            C_BLT:        own_req = blt_req;
+            C_PORT:       own_req = port_req;
+            default:      own_req = 1'b0;
+        endcase
+    end
 
     // Who gets the cycle that starts at the next edge
     reg  [2:0] win;
     always @(*) begin
-        if ((CPU_FIRST != 0) && cpu_cycle && cpu_req)
-            win = C_CPU;                                    // 0: the CPU's own cycle
-        else if (urg_any)
-            win = urg;                                      // 1: urgent
-        else if (nasty)
-            win = C_COP;                                    //    the copper, nasty
-        else if (cpu_cycle && cpu_req)
-            win = (high && !cpu_turn) ? C_BLT : C_CPU;      // 2: the default owner
-        else if (hard_cyc && hard_any)
-            win = hard;
-        else if (aud_cyc && aud_req)
-            win = C_AUD;
-        else
-            win = free;                                     // 3: free
-        if (!start_next) win = C_NONE;
+        if (!start_next)            win = C_NONE;
+        else if (locked && own_req) win = own;     // 1: a locked cycle's owner
+        else if (urg_any)           win = urg;     // 2: urgent
+        else if (own_req)           win = own;     // 3: the owner
+        else                        win = free;    // 4: free
     end
 
     assign go       = (win != C_NONE);

@@ -23,17 +23,19 @@ wire [1:0]  go_be;
 
 timebase tb0 (.clk(clk), .rst(por), .ph(), .sc(sc));
 
-dmac #(.CPU_CYCLES(5'b00101), .AUD_CYCLES(5'b10000),
-       .CPU_FIRST(1), .NASTY(0), .HIGH(0)) sched (
+// The slot plan: cycle 0 the CPU, the rest unowned; nothing locked.
+// A machine that changes its plan drives these from a register instead.
+dmac sched (
     .clk(clk), .rst(por), .start_next(m_start), .next_cycle(m_cycle),
+    .slot_owner(15'o00001), .slot_lock(5'b00000),
     .cpu_req(cpu_req), .cpu_we(cpu_we), .cpu_addr(cpu_addr), .cpu_wdata(cpu_wdata),
     .cpu_be(cpu_be), .cpu_ack(cpu_ack), .cpu_rvalid(cpu_rvalid),
     .bpl_req(1'b0), .bpl_addr(21'd0), .bpl_deadline(10'd0), .bpl_urgent(1'b0), .bpl_ack(), .bpl_rvalid(),
     .spr_req(1'b0), .spr_addr(21'd0), .spr_deadline(10'd0), .spr_urgent(1'b0), .spr_ack(), .spr_rvalid(),
     .aud_req(1'b0), .aud_addr(21'd0), .aud_ack(), .aud_rvalid(),
-    .cop_req(1'b0), .cop_addr(21'd0), .cop_pri(2'd0), .cop_ack(), .cop_rvalid(),
+    .cop_req(1'b0), .cop_addr(21'd0), .cop_high(1'b0), .cop_ack(), .cop_rvalid(),
     .blt_req(1'b0), .blt_we(1'b0), .blt_addr(21'd0), .blt_wdata(16'd0), .blt_be(2'b00),
-    .blt_high(1'b0), .blt_share(2'd0), .blt_ack(), .blt_rvalid(),
+    .blt_high(1'b0), .blt_ack(), .blt_rvalid(),
     .port_req(port_req), .port_we(port_we), .port_addr(port_addr), .port_wdata(port_wdata),
     .port_be(port_be), .port_ack(port_ack), .port_rvalid(port_rvalid),
     .go(go), .go_we(go_we), .go_addr(go_addr), .go_wdata(go_wdata), .go_be(go_be),
@@ -69,16 +71,20 @@ One column per clock:
 
 ## Choosing a slot plan
 
-- **Can the CPU wait?** If the CPU's bus waits for an ack (as a 68000's does), keep the defaults: the CPU owns cycle 0, and an urgent display fetch may take it. If the CPU cannot be held off (a Z80 or 6502 on a fixed clock, with the memory access timed by the CPU clock), set `CPU_FIRST` and give it the cycles its bus cycle lines up with in `CPU_CYCLES`.
-- **Display.** Leave the display its cycles 1 and 3 (`HARD_CYCLES`). Layers and sprites fill free cycles too.
-- **Audio.** Give audio a cycle the CPU does not own (`AUD_CYCLES`).
-- **Extras.** `NASTY` and `HIGH` let the copper and the DMA engine take the CPU's cycle. Turn them off if the machine has no such mode; the ports are then unused.
+The plan is two ports: `slot_owner`, 3 bits a cycle with the channel codes of `go_tag` (1 CPU, 2 display, 4 AUD, 5 COP, 6 BLT, 7 PORT, 0 nobody), and `slot_lock`, the cycles an urgent display fetch may not take. Put them in a register the CPU can write, and the plan is programmable. In octal, one digit a cycle with cycle 0 last, the 68000 plan is `15'o02421` (CPU, display, AUD, display, nobody).
+
+- **Can the CPU wait?** If the CPU's bus waits for an ack (as a 68000's does), give it a cycle and leave it unlocked: an urgent display fetch may take it. If the CPU cannot be held off (a Z80 or 6502 on a fixed clock), give it the cycles its bus cycle lines up with and lock them: `15'o42121`, `slot_lock` `5'b00101`.
+- **Display.** Give the display cycles 1 and 3. Layers and sprites fill spare cycles too, and take any unlocked cycle when urgent.
+- **Audio.** Give audio a cycle the CPU does not own.
+- **Spare cycles** go by the free order: copper (with `cop_high`), display, audio, copper, DMA engine (with `blt_high`), CPU, DMA engine, port.
+- **A big blit or a busy copper.** Write BLT or COP over the CPU's cycle for as long as it runs, then put the CPU back. This replaces the old nasty and HIGH modes.
 
 ## Pitfalls
 
 - **Hold the request.** `req` must stay high, with the address and data still, until the ack. Changing the address while waiting gives a cycle with the new address, which is fine; dropping `req` before the ack can lose the cycle or give one nobody wants.
 - **One ack, one cycle.** After the ack, a channel that wants another word puts up its next request at once. Do not leave the old `req` high for an extra clock, or it gets a second cycle.
 - **Deadlines in clocks.** `bpl_deadline` and `spr_deadline` are system clocks until the data is needed, counting down. `10'h3FF` means "no deadline".
-- **The urgent mark.** With `CPU_FIRST`, an urgent request still waits for the CPU's cycles. Set the channel's urgent mark early enough for that.
+- **The urgent mark.** An urgent request still waits for locked cycles. Set the channel's urgent mark early enough for the longest run of locked cycles in any plan the machine uses.
+- **Changing the plan.** It takes effect from the next cycle decided. Software must not take a locked cycle away from a CPU that cannot wait.
 - **Tie everything off.** An open `req` input is X in simulation and the scheduler's decision becomes X. Tie unused channels to 0.
 - **The tag is 3 bits.** Seven channels use all of it.

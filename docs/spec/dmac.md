@@ -2,7 +2,7 @@
 
 Status: **draft**
 
-The scheduler decides who gets each 20 ns memory cycle of the shared SRAM, as the Amiga's Agnus does. Seven channels ask for cycles; the scheduler picks one per cycle by a fixed set of rules and hands it to the SRAM controller (`sram_ctl.v`). It has no registers. Which cycles belong to whom is set by parameters, so each machine chooses its own slot plan.
+The scheduler decides who gets each 20 ns memory cycle of the shared SRAM, as the Amiga's Agnus does. Seven channels ask for cycles; the scheduler picks one per cycle by a short set of rules and hands it to the SRAM controller (`sram_ctl.v`). It has no registers. Which cycles belong to whom comes in on two ports, the slot table: the machine holds it in its own registers, so software can change the slot plan at any time.
 
 ## 1. Summary
 
@@ -16,16 +16,19 @@ The scheduler decides who gets each 20 ns memory cycle of the shared SRAM, as th
 | Decision | Combinational, in the clock before the cycle starts |
 | Ack | 1 clock, registered: the clock after the decision |
 | Read data | Back from `sram_ctl.v` with a tag; the scheduler decodes the tag into a valid line per channel |
-| Registers | None |
+| Slot plan | An owner for each of the 5 cycles, and which of them are locked against urgent requests: ports, so programmable |
+| Registers | None (the acks only) |
 
 ## 2. Ports
 
 | Name | Dir | Width | Meaning | Timing |
 |------|-----|-------|---------|--------|
 | `clk` | in | 1 | System clock, 100 MHz | – |
-| `rst` | in | 1 | Reset: acks low, the HIGH share counter cleared | Synchronous |
+| `rst` | in | 1 | Reset: acks low | Synchronous |
 | `start_next` | in | 1 | A memory cycle starts at the next edge | From `sram_ctl.v`, every other clock |
 | `next_cycle` | in | 3 | Its number in the slot, 0–4 | With `start_next` |
+| `slot_owner` | in | 15 | The owner of each cycle: bits 3n+2–3n for cycle n, coded as `go_tag` (0 no owner). BPL or SPR means the display (4.1) | Any time; read in the clock of `start_next` |
+| `slot_lock` | in | 5 | Bit n: in cycle n an urgent request may not take the cycle from its owner | As `slot_owner` |
 | `cpu_req` | in | 1 | The CPU asks for a cycle | Held until `cpu_ack` |
 | `cpu_we`, `cpu_addr`, `cpu_wdata`, `cpu_be` | in | 1, 21, 16, 2 | Write flag, word address (bits 21–1), write data, byte enables (bit 1 the upper byte) | Stable while `cpu_req` |
 | `cpu_ack` | out | 1 | The cycle was given | 1 clock, the clock after the decision |
@@ -37,10 +40,9 @@ The scheduler decides who gets each 20 ns memory cycle of the shared SRAM, as th
 | `spr_req`, `spr_addr`, `spr_deadline`, `spr_urgent`, `spr_ack`, `spr_rvalid` | | | Sprites: as for the layers | |
 | `aud_req`, `aud_addr`, `aud_ack`, `aud_rvalid` | | | Audio reads | |
 | `cop_req`, `cop_addr`, `cop_ack`, `cop_rvalid` | | | Copper reads | |
-| `cop_pri` | in | 2 | The copper's priority: 0 normal, 1 high, 2 nasty (with `NASTY`; else high), 3 high | With `cop_req` |
+| `cop_high` | in | 1 | The copper goes first in the free order | With `cop_req` |
 | `blt_req`, `blt_we`, `blt_addr`, `blt_wdata`, `blt_be`, `blt_ack`, `blt_rvalid` | | | DMA engine reads and writes, as for the CPU | |
-| `blt_high` | in | 1 | With `HIGH`: the DMA engine's job may take the CPU's cycle | With `blt_req` |
-| `blt_share` | in | 2 | With `HIGH`: the CPU keeps 1 in 2 (0), 4 (1) or 8 (2, 3) of the cycles both want | Held through the job |
+| `blt_high` | in | 1 | The DMA engine goes before the CPU in the free order | With `blt_req` |
 | `port_req`, `port_we`, `port_addr`, `port_wdata`, `port_be`, `port_ack`, `port_rvalid` | | | The test port, as for the CPU | |
 | `go` | out | 1 | A cycle starts at the next edge | Combinational, in the clock of `start_next` |
 | `go_we`, `go_addr`, `go_wdata`, `go_be` | out | 1, 21, 16, 2 | The winner's cycle. Read-only channels give `go_we` 0 and `go_be` 11 | With `go` |
@@ -51,16 +53,7 @@ The read data itself (`rdata`) goes from `sram_ctl.v` to every channel directly.
 
 ## 3. Parameters
 
-| Name | Width | Default | Meaning | For example |
-|------|-------|---------|---------|-------------|
-| `CPU_CYCLES` | 5 | `00001` | The CPU's own cycles (bit n for cycle n) | A CPU with a 4-clock bus cycle: `00001`. A CPU that must never wait, at 2 accesses a slot: `00101` |
-| `HARD_CYCLES` | 5 | `01010` | The hard-deadline channels' cycles | `01010` (cycles 1 and 3) in both machines so far |
-| `AUD_CYCLES` | 5 | `00100` | Audio's cycles | `00100`, or `10000` where the CPU has cycle 2 |
-| `CPU_FIRST` | 1 | 0 | 1: a CPU request in its own cycle beats every other rule | 1 for a CPU that cannot be held off |
-| `NASTY` | 1 | 1 | 1: the copper at priority 2 beats everything but urgent requests | 0 for a machine without a nasty copper |
-| `HIGH` | 1 | 1 | 1: `blt_high` and `blt_share` act | 0 where the DMA engine never takes the CPU's cycles |
-
-The masks should not overlap. If they do, the order of rule 2 below decides (CPU, then hard-deadline, then audio).
+None. The slot plan is the `slot_owner` and `slot_lock` ports.
 
 ## 4. Behaviour
 
@@ -70,23 +63,29 @@ For each cycle, the first rule that finds a request wins:
 
 | Rule | Who | When |
 |------|-----|------|
-| 0 | CPU | With `CPU_FIRST`, in a CPU cycle, if `cpu_req` |
-| 1 | The urgent hard-deadline channel, earliest deadline first (layers on a tie) | Any cycle, if `bpl_urgent` or `spr_urgent` with its request |
-| 1 | COP | With `NASTY`, if `cop_req` and `cop_pri` = 2 |
-| 2 | CPU, or BLT in its place (4.2) | In a CPU cycle, if `cpu_req` |
-| 2 | The hard-deadline channel due first | In a `HARD_CYCLES` cycle, if `bpl_req` or `spr_req` |
-| 2 | AUD | In an `AUD_CYCLES` cycle, if `aud_req` |
-| 3 | The free order: COP at priority 1–3, the hard-deadline channel due first, AUD, COP, BLT, PORT | Any cycle nobody above took |
+| 1 | The cycle's owner | In a locked cycle (`slot_lock`), if the owner asks |
+| 2 | The urgent hard-deadline channel, earliest deadline first (layers on a tie) | Any cycle, if `bpl_urgent` or `spr_urgent` with its request |
+| 3 | The cycle's owner | If the owner asks |
+| 4 | The free order: COP with `cop_high`, the display, AUD, COP, BLT with `blt_high`, CPU, BLT, PORT | Any cycle nobody above took |
 
-"Due first" compares `bpl_deadline` and `spr_deadline`: the smaller wins, the layers on a tie. Among urgent requests the same holds. Cycles 5–7 do not exist (`next_cycle` is 0–4); if one came, it would go by rule 3.
+"The display" is the hard-deadline channel due first: `bpl_deadline` and `spr_deadline` are compared, the smaller wins, the layers on a tie. An owner of BPL or SPR means the display, so either one can use the display's cycles. Among urgent requests the same order holds. Cycles 5–7 do not exist (`next_cycle` is 0–4); if one came, it would have no owner and go by rule 4.
 
-So no cycle is wasted: a cycle its owner does not use goes to the free order.
+So no cycle is wasted: a cycle its owner does not use goes to the free order. The CPU is in the free order too, so it gets spare cycles beyond its own unless a `blt_high` job wants them.
 
-### 4.2 The HIGH share
+### 4.2 Changing the plan
 
-With `HIGH`, a DMA engine job with `blt_high` takes the CPU's cycle from the CPU at rule 2, except every 2nd, 4th or 8th time (by `blt_share`). A 3-bit counter counts the cycles both wanted. It moves on only in cycles that reached rule 2 (no urgent request, no nasty copper) with `cpu_req`, `blt_req` and `blt_high` all high. On the CPU's turn the CPU gets the cycle and the counter goes back to 0. Reset clears it.
+`slot_owner` and `slot_lock` are read in each clock with `start_next`, for that one cycle. A change takes effect from the next cycle decided; a cycle already given is not affected, and a change in mid-slot is fine. Each channel's req/ack handshake is the same whatever the plan, so a channel never sees the change except in how soon its ack comes.
 
-With `CPU_FIRST`, rule 0 gives the CPU its cycles first, so HIGH never wins: leave `HIGH` at 0.
+For example (the codes are those of `go_tag`):
+
+| Plan | Cycles 0, 1, 2, 3, 4 | `slot_lock` | Use |
+|------|-------|------|-----|
+| A CPU that can wait | CPU, BPL, AUD, BPL, none | `00000` | The 68000 machine: an urgent display fetch may take the CPU's cycle |
+| A CPU that cannot wait | CPU, BPL, CPU, BPL, AUD | `00101` | The Z80 machine: the CPU's cycles are its own, whatever else asks |
+| A big blit | BLT, BPL, AUD, BPL, none | `00000` | The DMA engine takes the CPU's cycle (as the Amiga's "blitter nasty"); the CPU gets only spare cycles |
+| The copper first | COP, BPL, AUD, BPL, none | `00000` | A copper list that must not wait for the CPU |
+
+Software can switch between plans like these, for example a big-blit plan for the length of a blit.
 
 ### 4.3 Timing
 
@@ -111,22 +110,22 @@ The wrapper (or the machine's top level) must:
 
 - Drive `start_next` and `next_cycle` from `sram_ctl.v`, and `rvalid`, `rtag` back from it; give `go_*` to it.
 - Tie off every channel it does not have: `req` 0, the other inputs to any constant. Leave the unused acks and valid lines open.
-- Give the layer and sprite channels a deadline in system clocks and an urgent flag. The urgent mark is the channel's own: it must leave enough time for the cycles the urgent request may have to wait. With `CPU_FIRST` an urgent request can still wait for the CPU's cycles, so the mark must be earlier.
-- Drive `cop_pri` from the copper's priority setting, and `blt_high`, `blt_share` from the DMA engine's current job (or 0).
+- Give the layer and sprite channels a deadline in system clocks and an urgent flag. The urgent mark is the channel's own: it must leave enough time for the cycles the urgent request may have to wait. An urgent request still waits for locked cycles, so with locks the mark must be earlier.
+- Hold the slot plan (`slot_owner`, `slot_lock`) in a register, with the machine's own plan as its reset value, or tie it to a constant if the plan never changes.
+- Drive `cop_high` from the copper's priority setting, and `blt_high` from the DMA engine's current job (or 0).
 - Hold each request, with its address and data, until its ack.
-- Set the parameters for its own slot plan. A CPU that can be held off (its bus waits for an ack) can use the defaults. A CPU that cannot wait needs `CPU_FIRST` and its own cycles in `CPU_CYCLES`.
+- Choose its slot plan. A CPU that can be held off (its bus waits for an ack) needs no lock. A CPU that cannot wait needs the cycles its bus cycle lines up with, locked. Software that changes the plan must keep those cycles for such a CPU.
 
 ## 6. Test plan
 
 | Test | What it checks |
 |------|----------------|
-| `test/dmac` | Two schedulers side by side on the same random requests: the defaults, and a plan with `CPU_CYCLES` `00101`, `AUD_CYCLES` `10000`, `CPU_FIRST`, no `NASTY`, no `HIGH`. Every clock: the winner, `go`, the address, write flag, byte enables and data against a model of each plan's rules; the acks a clock later; the valid lines against `rtag`. Counters make sure the cases that tell the plans apart came up: an urgent request over the CPU, the CPU over an urgent request, the nasty copper, a HIGH job and the CPU's turn, audio in its cycle |
+| `test/dmac` | Random requests and a random slot plan that changes every few hundred clocks, also in mid-slot. Every clock: the winner, `go`, the address, write flag, byte enables and data against a model of the rules; the acks a clock later; the valid lines against `rtag`. Counters make sure every rule came up: a locked owner over an urgent request, an urgent request over an owner, an owner, the display owner giving the cycle to the sprites, the CPU in a spare cycle, a `blt_high` job over the CPU, a `cop_high` copper over the display, the port, a cycle with no owner |
 | The machines' system tests | Each machine's copper, sprite, video and CPU tests run on its own plan: the bandwidth and deadline checks there are the real test of the plan |
 
 ## 7. Open points
 
 | # | Point |
 |---|-------|
-| D1 | A mask for the copper's own cycles (both machines give the copper only free cycles and priority now) |
-| D2 | `HIGH` with `CPU_FIRST`: should a HIGH job be able to take a CPU cycle the CPU does not want next? Today it gets it by the free order anyway |
-| D3 | More channels (a second DMA engine, a disk) would need a wider tag than `sram_ctl.v` carries now |
+| D1 | The old share mode (a HIGH DMA engine job leaving the CPU 1 in 2, 4 or 8 of its cycles) is gone. A machine that needs it can switch the CPU's cycle between CPU and BLT in its plan register |
+| D2 | More channels (a second DMA engine, a disk) would need a wider tag than `sram_ctl.v` carries now, and a wider owner field |
