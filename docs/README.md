@@ -29,7 +29,7 @@ Each machine documents its own instantiation: the registers that drive a core, t
 
 ## Decisions
 
-The reasons behind the cores' design are in [adr/](adr/README.md), one file a decision.
+The reasons behind the cores' design are in [adr/](adr/README.md), one folder a block and one file a decision.
 
 ## Style
 
