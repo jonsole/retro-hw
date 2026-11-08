@@ -1,5 +1,5 @@
 // Stand-ins for the Xilinx primitives in platform/artix7, for linting the
-// board builds (fpga/lint.sh): the same ports and parameters as used, no
+// board builds (lint.sh, and each machine's own lint): the same ports and parameters as used, no
 // logic. Never simulated or synthesised.
 module BUFG (input wire I, output wire O);
     assign O = I;

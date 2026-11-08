@@ -1,4 +1,4 @@
-// SRAM controller (spec 5): the timing of each 20 ns memory cycle on the
+// SRAM controller (docs/spec/sram_ctl.md): the timing of each 20 ns memory cycle on the
 // SRAM pins. Who gets each cycle is decided by the DMA scheduler (dmac.v).
 //
 // A 100 ns slot holds 5 memory cycles of 20 ns (2 clocks at 100 MHz),
@@ -15,8 +15,7 @@
 //          and hold, 10 ns data setup)
 // *_r is the value for the first half of a clock, *_f for the second half.
 //
-// For the CPU, a read issued at the start of a slot has its data in rdata
-// 40 ns later (rvalid), so bus_if gives it to fx68k at 60 ns into the slot.
+// A read issued at edge E has its data in rdata 40 ns later (rvalid).
 module sram_ctl (
     input  wire        clk,         // 100 MHz
     input  wire        rst,
