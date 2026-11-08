@@ -93,16 +93,15 @@ module dmac #(
     wire [N-1:0]  urg_req = urgent & req;
     wire [N-1:0]  hi_req  = high & req;
 
-    // The winner, one-hot
-    reg  [N-1:0]  win;
-    always @(*) begin
-        if (!start_next)             win = {N{1'b0}};
-        else if (locked && |own_req) win = first(own_req);   // 1: a locked slot's owner
-        else if (|urg_req)           win = first(urg_req);   // 2: urgent
-        else if (|own_req)           win = first(own_req);   // 3: an owner
-        else if (|hi_req)            win = first(hi_req);    // 4: high,
-        else                         win = first(req);       //    then any
-    end
+    // The mask the rules pick, then its lowest bit: the winner, one-hot.
+    // Rules 1 and 3 both pick the owners; the lock only decides whether
+    // urgent comes between them. One lowest-bit pick after the choice is
+    // cheaper than one for each mask before it.
+    wire [N-1:0]  pick = (|own_req && (locked || !(|urg_req))) ? own_req :   // 1, 3: an owner
+                         (|urg_req)                            ? urg_req :   // 2: urgent
+                         (|hi_req)                             ? hi_req  :   // 4: high,
+                                                                 req;        //    then any
+    wire [N-1:0]  win  = start_next ? first(pick) : {N{1'b0}};
 
     // The winner's number, and its cycle: an AND-OR mux, as win is one-hot
     reg  [TW-1:0]   tag;
@@ -126,7 +125,7 @@ module dmac #(
         end
     end
 
-    assign go       = |win;
+    assign go       = start_next && |req;
     assign go_we    = w_we;
     assign go_addr  = w_addr;
     assign go_wdata = w_wdata;

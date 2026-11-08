@@ -233,7 +233,7 @@ A requester's urgent mark must be at least this far ahead of its deadline.
 The logic is in three parts, all combinational:
 
 1. **The slot.** A mux picks the owner mask and the lock bit of `next_slot` from the plan.
-2. **The winner.** Five masks (locked owners, urgent, owners, high, any), each ANDed with `req`. The lowest set bit of each is `m & (~m + 1)`. A priority choice between the five gives the winner as a one-hot mask.
+2. **The winner.** Three masks (owners, urgent, high), each ANDed with `req`, and `req` itself. The rules choose one of the four (owners with the lock, or urgent, then owners, then high, then any); its lowest set bit, `m & (~m + 1)`, is the winner as a one-hot mask. Choosing first and picking the bit once needs one carry chain instead of one for each mask.
 3. **The cycle.** An AND-OR mux, as the winner is one-hot: each requester's address, data, byte enables and write flag ANDed with its winner bit, then ORed together.
 4. **The read delay.** The winner's number (clog2(N) bits) through a shift register `RD_DELAY` long, then decoded into `rvalid_o`. On a 7-series part it maps to one SRL16 a bit.
 
