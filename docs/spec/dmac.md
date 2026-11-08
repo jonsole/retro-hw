@@ -1,6 +1,6 @@
 # Memory-cycle scheduler (dmac)
 
-Status: **draft**
+Status: **locked**, 8 November 2026. The ports, parameters and rules below are fixed. A change to any of them needs a new revision of this spec, agreed with the machines that use it. The open points (section 7) stay open and do not change the interface.
 
 The scheduler decides which requester gets each memory cycle of the shared SRAM, as the Amiga's Agnus does. It has N requesters, numbered 0 to N−1, and a slot plan of S slots. Both are parameters, set when the scheduler is instantiated. The requesters are generic: the scheduler does not know which is the CPU, the display or the copper. The machine decides that, by the numbers it gives them and by its slot plan.
 
