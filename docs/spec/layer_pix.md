@@ -109,7 +109,7 @@ The machine gives each layer a unit and:
 
 - A beam on the pixel clock: `hc`, `hn` and `line_start` one clock long at the start of the horizontal blank.
 - The line's settings, worked out in the blank and held through the line.
-- A layer fetch on the system clock, with 8 data registers per layer (and the tile attributes with `TILES`). At the line's start it empties the handshake (sets `fill_t` to the `take_t` it sees, so a spare group from the last line is dropped) and fetches the line's first group; then it fills a group each time one is taken. It gives `ready` once it has restarted for the line, through a synchroniser.
+- A layer fetch on the system clock, with 8 data registers per layer (and the tile attributes with `TILES`): `layer_fetch.v` (docs/spec/layer_fetch.md) does this. At the line's start it empties the handshake (sets `fill_t` to the `take_t` it sees, so a spare group from the last line is dropped) and fetches the line's first group; then it fills a group each time one is taken. It gives `ready` once it has restarted for the line, through a synchroniser.
 - A per-group deadline on its side: a group lasts 16 × 2^hs pixel clocks once the window has started.
 - Something that counts `overrun_t` toggles, if the machine reports overruns.
 
@@ -126,6 +126,6 @@ The unit has no registers: what the settings are called and where they live is t
 
 | # | Point |
 |---|-------|
-| L1 | Planar tiles (tile layers with planar patterns) are not built: `TILES` assumes chunky patterns |
-| L2 | The palette offset is added to PAL in 4 bits: a sum past 15 wraps. Should it saturate? |
-| L3 | `raw` is the value before the palette, for direct colour; neither machine uses it yet |
+| L1 | Closed: planar tiles (tile layers with planar patterns) are not planned. `TILES` assumes chunky patterns, and `layer_fetch` doesn't support `PLANAR` and `TILES` together. Neither machine needs both; a machine that does would start here and in `layer_fetch` 4.5 |
+| L2 | Closed: the palette offset is added to PAL in 4 bits and a sum past 15 wraps, by design (retro-z80 video spec: `((PALOFS + PAL) mod 16) × 16 + p`) |
+| L3 | `raw` is the value before the palette, for direct colour. retro68k uses it; retro-z80 will from its KS3 build (direct colour needs all three layers, and its KS2 build has one) |
