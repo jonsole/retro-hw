@@ -421,6 +421,8 @@ module sprite_fetch #(
     reg  [6:0]  d3_dl;
     always @(posedge clk) begin : dcalc
         reg [13:0] wpx;
+        reg [17:0] wp18;
+        reg [4:0]  wsa;
         reg [11:0] c7;
         // 1: the pixels until the sprite's span (0 if the beam is in it)
         if (bt < xe_t[rr])
@@ -433,7 +435,11 @@ module sprite_fetch #(
         // 2: the pixels the words last: words x screen pixels per word (a
         // power of two, rounded down: a shrunk sprite's words may last less
         // than a pixel), and the total
-        wpx = (d1_wsh >= 0) ? ({7'd0, d1_w} << d1_wsh) : ({7'd0, d1_w} >> (-d1_wsh));
+        // one left shift, by wsh + 4 (0 to 11), then /16: cheaper than a
+        // shifter for each direction, and the same for every wsh (-4 to 7)
+        wsa = {d1_wsh[3], d1_wsh} + 5'd4;
+        wp18 = {11'd0, d1_w} << wsa;
+        wpx = wp18[17:4];
         d2_tot <= d1_dpx + wpx;
         d2_rr  <= d1_rr;
         // 3: x 3.5 / 8 (a pixel is 3.7 clocks: on the safe side), less 2 units

@@ -172,7 +172,7 @@ module tb_lock_sprite;
                     0: s_hstart[j] <= ({$random} % 4 == 0) ? $random : 11'd16 + ({$random} % 800);
                     1: s_hstop[j]  <= ({$random} % 4 == 0) ? $random : s_hstart[j] + ({$random} % 300);
                     2: begin s_vstart[j] <= {$random} % 60; s_vstop[j] <= ({$random} % 8 == 0) ? $random : 11'd200 + ({$random} % 400); end
-                    3: begin s_bpp[j] <= {$random} % 3; s_depth[j] <= $random; s_pal[j] <= $random; end
+                    3: begin s_bpp[j] <= $random; s_depth[j] <= $random; s_pal[j] <= $random; end   // bpp 3 too: undefined, but software can write it
                     4: s_xstep[j]  <= ({$random} % 4 == 0) ? $random : 16'h0400 + ({$random} % 16'h1800);
                     5: s_ystep[j]  <= ({$random} % 4 == 0) ? $random : 16'h0400 + ({$random} % 16'h1800);
                     default: begin
