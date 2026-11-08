@@ -15,5 +15,5 @@ for f in rtl/*.v; do
 done
 $LINT --top-module hdmi_out platform/artix7/hdmi_out.v platform/artix7/lint_stub.v
 $LINT --top-module oddr platform/artix7/oddr.v platform/artix7/lint_stub.v
-$LINT --top-module oddr platform/sim/oddr.v
+$LINT --no-timing --top-module oddr platform/sim/oddr.v
 echo "lint: no widths cut short"
