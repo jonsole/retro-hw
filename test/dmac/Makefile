@@ -1,13 +1,30 @@
-# The dmac unit test (Icarus Verilog): passes when the log says TEST PASSED.
+# The dmac tests (Icarus Verilog): the unit test, run for several sizes of N
+# (requesters) and S (slots), and dmac with the real sram_ctl. Passes when
+# every log says TEST PASSED.
 IVERILOG ?= iverilog
 VVP      ?= vvp
 RTL      := ../../rtl
 
-.PHONY: test
-test: build/tb_dmac.vvp
-	$(VVP) -n build/tb_dmac.vvp | tee build/tb_dmac.log
-	grep -q '^TEST PASSED' build/tb_dmac.log
+# N_S pairs: the two machines' size, the smallest, a power of 2, odd sizes,
+# and more requesters than a 3-bit number holds
+CONFIGS  := 7_5 1_1 8_8 3_6 5_3 12_5
 
-build/tb_dmac.vvp: tb_dmac.v $(RTL)/dmac.v
+.PHONY: test
+test: $(CONFIGS:%=build/tb_dmac_%.log) build/tb_dmac_sram.log
+	@for f in $^; do grep -q '^TEST PASSED' $$f || { echo "FAILED: $$f"; exit 1; }; done
+	@echo "dmac: all sizes passed"
+
+build/tb_dmac_%.log: build/tb_dmac_%.vvp
+	$(VVP) -n $< | tee $@
+
+build/tb_dmac_%.vvp: tb_dmac.v $(RTL)/dmac.v
 	mkdir -p build
-	$(IVERILOG) -g2005 -Wall -Wno-timescale -o $@ -s tb_dmac tb_dmac.v $(RTL)/dmac.v
+	$(IVERILOG) -g2005 -Wall -Wno-timescale -o $@ -s tb_dmac \
+	    -Ptb_dmac.N=$(word 1,$(subst _, ,$*)) -Ptb_dmac.S=$(word 2,$(subst _, ,$*)) tb_dmac.v $(RTL)/dmac.v
+
+build/tb_dmac_sram.log: build/tb_dmac_sram.vvp
+	$(VVP) -n $< | tee $@
+
+build/tb_dmac_sram.vvp: tb_dmac_sram.v $(RTL)/dmac.v $(RTL)/sram_ctl.v
+	mkdir -p build
+	$(IVERILOG) -g2005 -Wall -Wno-timescale -o $@ -s tb_dmac_sram tb_dmac_sram.v $(RTL)/dmac.v $(RTL)/sram_ctl.v

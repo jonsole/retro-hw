@@ -1,199 +1,158 @@
-// DMA scheduler: decides who gets each 20 ns memory cycle, as the Amiga's
-// Agnus does. sram_ctl.v does the cycle itself. No registers: the copper's
-// priority and the DMA engine's HIGH mode come in as plain ports. The
-// timebase (timebase.v) and sram_ctl.v say which cycle starts next.
+// Memory-cycle scheduler: decides which requester gets each memory cycle,
+// as the Amiga's Agnus does. sram_ctl.v does the cycle itself.
 //
-// Channels, each holding req until ack (a 1-clock pulse at the edge the
-// cycle is issued); read data comes back on rdata with rvalid for that
-// channel 40 ns later:
-//   CPU   the CPU's bus interface
-//   BPL   layer fetch: hard deadline
-//   SPR   sprites: hard deadline
-//   AUD   audio
-//   COP   copper
-//   BLT   DMA engine / blitter
-//   PORT  the DMA port: a test channel, used by the simulation tests
+// N generic requesters, numbered 0 to N-1. A lower number goes first
+// wherever two requesters tie. Each holds req until ack (a 1-clock pulse
+// the clock after the cycle is given); read data comes back on the shared
+// rdata with that requester's rvalid line. The scheduler keeps the number
+// of each cycle's winner for RD_DELAY clocks, so it knows whose read data
+// the memory controller's rvalid is for: the controller needs no tag.
 //
-// Every cycle of the 5 in a slot can have a default owner. A cycle its
-// owner doesn't use goes to the next in the free order, so no cycle is
-// wasted. For each cycle, the first rule that finds a request wins:
+// The slot plan: S slots, numbered 0 to S-1, one memory cycle each. The
+// machine says which slot the next cycle is (next_slot). For each slot,
+// slot_owner has a mask of the requesters that own it, and slot_lock says
+// whether an urgent request may take it from them. Both are ports, so the
+// machine can hold them in a register and change them at any time.
 //
-//   0. With CPU_FIRST: in the CPU's cycles (CPU_CYCLES) a CPU request gets
-//      the cycle, and nothing overrides it: the CPU never waits.
-//   1. An urgent hard-deadline request gets the cycle, whatever it is (the
-//      CPU's too, without CPU_FIRST: its access then waits). Earliest
-//      deadline first. Then, with NASTY, the copper at priority 2 (nasty).
-//   2. The default owner: in the CPU's cycles the CPU (with HIGH, a HIGH
-//      DMA engine job may take it, below); in HARD_CYCLES the hard-deadline
-//      channels (earliest deadline first); in AUD_CYCLES audio.
-//   3. The free order: hard-deadline channels (earliest deadline first),
-//      AUD, COP, BLT, PORT; the copper at high priority (1-3) goes first.
+// For each cycle, the first rule that finds a request wins; within a rule
+// the lowest-numbered requester wins:
 //
-// The cycle masks have bit n for cycle n; each machine sets its own plan
-// (docs/spec/dmac.md). The defaults: the CPU owns cycle 0, which urgent
-// requests and the nasty copper may take; the display cycles 1 and 3;
-// audio cycle 2. Without NASTY, copper priorities 2 and 3 act as 1.
+//   1. In a locked slot, an owner.
+//   2. An urgent request.
+//   3. An owner.
+//   4. A high request (high), then any request.
 //
-// HIGH (a DMA engine job that may take the CPU's cycle) acts only at rule
-// 2, so with CPU_FIRST it never wins: leave HIGH off then.
+// A slot whose owners don't ask goes to rule 4, so no cycle is wasted.
+// No registers but the acks.
 module dmac #(
-    parameter [4:0] CPU_CYCLES  = 5'b00001,   // the CPU's own cycles
-    parameter [4:0] HARD_CYCLES = 5'b01010,   // the hard-deadline channels' cycles
-    parameter [4:0] AUD_CYCLES  = 5'b00100,   // audio's cycles
-    parameter       CPU_FIRST   = 0,          // 1: a CPU request in its cycle beats everything
-    parameter       NASTY       = 1,          // 1: the copper at priority 2 beats all but urgent
-    parameter       HIGH        = 1           // 1: blt_high and blt_share act
+    parameter N  = 7,                 // requesters, 1 or more
+    parameter S  = 5,                 // slots in the plan
+    parameter AW = 21,                // word address width
+    parameter DW = 16,                // data width (a multiple of 8)
+    parameter RD_DELAY = 4,           // clocks from a cycle's issue edge to the
+                                      // edge at which its read data is taken (rvalid
+                                      // is high in the last of them); 4 for sram_ctl
+    parameter SW = (S > 1) ? $clog2(S) : 1    // next_slot width
 ) (
-    input  wire        clk,
-    input  wire        rst,
+    input  wire              clk,
+    input  wire              rst,
 
-    // From sram_ctl: a cycle starts at the next edge, and which one
-    input  wire        start_next,
-    input  wire [2:0]  next_cycle,
+    // From the memory controller: a cycle starts at the next edge, and
+    // which slot of the plan it is (S or more: no slot, no owner)
+    input  wire              start_next,
+    input  wire [SW-1:0]     next_slot,
 
-    // CPU
-    input  wire        cpu_req,
-    input  wire        cpu_we,
-    input  wire [21:1] cpu_addr,
-    input  wire [15:0] cpu_wdata,
-    input  wire [1:0]  cpu_be,
-    output reg         cpu_ack,
-    output wire        cpu_rvalid,
+    // The slot plan: bits n*N .. n*N+N-1 are slot n's owners (bit k for
+    // requester k); bit n of slot_lock locks slot n against urgent requests
+    input  wire [S*N-1:0]    slot_owner,
+    input  wire [S-1:0]      slot_lock,
 
-    // Layers (reads)
-    input  wire        bpl_req,
-    input  wire [21:1] bpl_addr,
-    input  wire [9:0]  bpl_deadline,   // system clocks until the data is needed
-    input  wire        bpl_urgent,
-    output reg         bpl_ack,
-    output wire        bpl_rvalid,
+    // The requesters: bit k, or field k, is requester k
+    input  wire [N-1:0]      req,
+    input  wire [N-1:0]      urgent,     // the request must not wait
+    input  wire [N-1:0]      high,       // first among the spare-cycle requests
+    input  wire [N-1:0]      we,         // 1 write, 0 read
+    input  wire [N*AW-1:0]   addr,
+    input  wire [N*DW-1:0]   wdata,
+    input  wire [N*DW/8-1:0] be,         // byte enables, for writes
+    output reg  [N-1:0]      ack,
+    output wire [N-1:0]      rvalid_o,   // read data for requester k is on rdata
 
-    // Sprites (reads), audio (reads), copper (reads)
-    input  wire        spr_req,
-    input  wire [21:1] spr_addr,
-    input  wire [9:0]  spr_deadline,
-    input  wire        spr_urgent,
-    output reg         spr_ack,
-    output wire        spr_rvalid,
-    input  wire        aud_req,
-    input  wire [21:1] aud_addr,
-    output reg         aud_ack,
-    output wire        aud_rvalid,
-    input  wire        cop_req,
-    input  wire [21:1] cop_addr,
-    input  wire [1:0]  cop_pri,        // the copper's priority: 0 normal, 1 high, 2 nasty (with NASTY), 3 high
-    output reg         cop_ack,
-    output wire        cop_rvalid,
-
-    // DMA engine / blitter, and the DMA port (reads and writes)
-    input  wire        blt_req,
-    input  wire        blt_we,
-    input  wire [21:1] blt_addr,
-    input  wire [15:0] blt_wdata,
-    input  wire [1:0]  blt_be,
-    input  wire        blt_high,       // with HIGH: may take the CPU's cycle ...
-    input  wire [1:0]  blt_share,      // ... leaving it 1 in 2, 4 or 8 of them
-    output reg         blt_ack,
-    output wire        blt_rvalid,
-    input  wire        port_req,
-    input  wire        port_we,
-    input  wire [21:1] port_addr,
-    input  wire [15:0] port_wdata,
-    input  wire [1:0]  port_be,
-    output reg         port_ack,
-    output wire        port_rvalid,
-
-    // To sram_ctl
-    output wire        go,
-    output wire        go_we,
-    output wire [21:1] go_addr,
-    output wire [15:0] go_wdata,
-    output wire [1:0]  go_be,
-    output wire [2:0]  go_tag,
-    input  wire        rvalid,
-    input  wire [2:0]  rtag
+    // To the memory controller
+    output wire              go,
+    output wire              go_we,
+    output wire [AW-1:0]     go_addr,
+    output wire [DW-1:0]     go_wdata,
+    output wire [DW/8-1:0]   go_be,
+    input  wire              rvalid     // read data is on rdata: whose, the scheduler knows
 );
-    localparam C_NONE = 3'd0, C_CPU = 3'd1, C_BPL = 3'd2, C_SPR = 3'd3,
-               C_AUD  = 3'd4, C_COP = 3'd5, C_BLT = 3'd6, C_PORT = 3'd7;
+    localparam TW = (N > 1) ? $clog2(N) : 1;   // width of a requester's number
 
-    // The hard-deadline channel that is due first (layers on a tie)
-    wire       hard_any = bpl_req || spr_req;
-    wire [2:0] hard     = (spr_req && (!bpl_req || spr_deadline < bpl_deadline)) ? C_SPR : C_BPL;
-    wire       urg_any  = (bpl_req && bpl_urgent) || (spr_req && spr_urgent);
-    wire [2:0] urg      = (spr_req && spr_urgent && !(bpl_req && bpl_urgent && bpl_deadline <= spr_deadline))
-                          ? C_SPR : C_BPL;
+    // The lowest set bit of a mask, alone
+    function [N-1:0] first;
+        input [N-1:0] m;
+        first = m & (~m + 1'b1);
+    endfunction
 
-    // The free order (a copper at high priority goes first)
-    wire       cop_hi = cop_req && cop_pri != 2'd0;
-    wire [2:0] free = cop_hi   ? C_COP :
-                      hard_any ? hard :
-                      aud_req  ? C_AUD :
-                      cop_req  ? C_COP :
-                      blt_req  ? C_BLT :
-                      port_req ? C_PORT : C_NONE;
-
-    // The owners of the cycle that starts at the next edge (cycles 5-7 own nothing)
-    wire [7:0] cyc       = 8'd1 << next_cycle;
-    wire       cpu_cycle = |(cyc[4:0] & CPU_CYCLES);
-    wire       hard_cyc  = |(cyc[4:0] & HARD_CYCLES);
-    wire       aud_cyc   = |(cyc[4:0] & AUD_CYCLES);
-    wire       nasty     = (NASTY != 0) && cop_req && cop_pri == 2'd2;
-    wire       high      = (HIGH != 0) && blt_req && blt_high;
-
-    // A HIGH DMA engine job and the CPU both want the CPU's cycle: the CPU
-    // gets every 2nd, 4th or 8th of these, the engine the rest
-    reg  [2:0] shc;
-    wire [2:0] shmax    = (blt_share == 2'd0) ? 3'd1 : (blt_share == 2'd1) ? 3'd3 : 3'd7;
-    wire       cpu_turn = (shc == shmax);
-    always @(posedge clk)
-        if (rst || HIGH == 0) shc <= 3'd0;
-        else if (start_next && cpu_cycle && cpu_req && high && !urg_any && !nasty)
-            shc <= cpu_turn ? 3'd0 : shc + 1'b1;
-
-    // Who gets the cycle that starts at the next edge
-    reg  [2:0] win;
+    // The slot being decided: its owners and lock (none past the plan's end)
+    wire [31:0]   slot = {{(32-SW){1'b0}}, next_slot};
+    reg  [N-1:0]  owners;
+    reg           locked;
+    integer n;
     always @(*) begin
-        if ((CPU_FIRST != 0) && cpu_cycle && cpu_req)
-            win = C_CPU;                                    // 0: the CPU's own cycle
-        else if (urg_any)
-            win = urg;                                      // 1: urgent
-        else if (nasty)
-            win = C_COP;                                    //    the copper, nasty
-        else if (cpu_cycle && cpu_req)
-            win = (high && !cpu_turn) ? C_BLT : C_CPU;      // 2: the default owner
-        else if (hard_cyc && hard_any)
-            win = hard;
-        else if (aud_cyc && aud_req)
-            win = C_AUD;
-        else
-            win = free;                                     // 3: free
-        if (!start_next) win = C_NONE;
+        owners = {N{1'b0}};
+        locked = 1'b0;
+        for (n = 0; n < S; n = n + 1)
+            if (slot == n) begin
+                owners = slot_owner[n*N +: N];
+                locked = slot_lock[n];
+            end
     end
 
-    assign go       = (win != C_NONE);
-    assign go_tag   = win;
-    assign go_we    = (win == C_CPU) ? cpu_we : (win == C_BLT) ? blt_we : (win == C_PORT) ? port_we : 1'b0;
-    assign go_addr  = (win == C_CPU) ? cpu_addr : (win == C_BPL) ? bpl_addr : (win == C_SPR) ? spr_addr :
-                      (win == C_AUD) ? aud_addr : (win == C_COP) ? cop_addr : (win == C_BLT) ? blt_addr : port_addr;
-    assign go_wdata = (win == C_CPU) ? cpu_wdata : (win == C_BLT) ? blt_wdata : port_wdata;
-    assign go_be    = (win == C_CPU) ? cpu_be : (win == C_BLT) ? blt_be : (win == C_PORT) ? port_be : 2'b11;
+    wire [N-1:0]  own_req = owners & req;
+    wire [N-1:0]  urg_req = urgent & req;
+    wire [N-1:0]  hi_req  = high & req;
 
-    always @(posedge clk) begin
-        cpu_ack  <= !rst && win == C_CPU;
-        bpl_ack  <= !rst && win == C_BPL;
-        spr_ack  <= !rst && win == C_SPR;
-        aud_ack  <= !rst && win == C_AUD;
-        cop_ack  <= !rst && win == C_COP;
-        blt_ack  <= !rst && win == C_BLT;
-        port_ack <= !rst && win == C_PORT;
+    // The winner, one-hot
+    reg  [N-1:0]  win;
+    always @(*) begin
+        if (!start_next)             win = {N{1'b0}};
+        else if (locked && |own_req) win = first(own_req);   // 1: a locked slot's owner
+        else if (|urg_req)           win = first(urg_req);   // 2: urgent
+        else if (|own_req)           win = first(own_req);   // 3: an owner
+        else if (|hi_req)            win = first(hi_req);    // 4: high,
+        else                         win = first(req);       //    then any
     end
 
-    // Read data back to its channel (rdata itself is shared)
-    assign cpu_rvalid  = rvalid && rtag == C_CPU;
-    assign bpl_rvalid  = rvalid && rtag == C_BPL;
-    assign spr_rvalid  = rvalid && rtag == C_SPR;
-    assign aud_rvalid  = rvalid && rtag == C_AUD;
-    assign cop_rvalid  = rvalid && rtag == C_COP;
-    assign blt_rvalid  = rvalid && rtag == C_BLT;
-    assign port_rvalid = rvalid && rtag == C_PORT;
+    // The winner's number, and its cycle: an AND-OR mux, as win is one-hot
+    reg  [TW-1:0]   tag;
+    reg             w_we;
+    reg  [AW-1:0]   w_addr;
+    reg  [DW-1:0]   w_wdata;
+    reg  [DW/8-1:0] w_be;
+    integer k;
+    always @(*) begin
+        tag = {TW{1'b0}};
+        w_we = 1'b0;
+        w_addr = {AW{1'b0}};
+        w_wdata = {DW{1'b0}};
+        w_be = {(DW/8){1'b0}};
+        for (k = 0; k < N; k = k + 1) begin
+            tag     = tag     | ({TW{win[k]}} & k[TW-1:0]);
+            w_we    = w_we    | (win[k] & we[k]);
+            w_addr  = w_addr  | ({AW{win[k]}} & addr[k*AW +: AW]);
+            w_wdata = w_wdata | ({DW{win[k]}} & wdata[k*DW +: DW]);
+            w_be    = w_be    | ({(DW/8){win[k]}} & be[k*(DW/8) +: DW/8]);
+        end
+    end
+
+    assign go       = |win;
+    assign go_we    = w_we;
+    assign go_addr  = w_addr;
+    assign go_wdata = w_wdata;
+    assign go_be    = w_be;
+
+    always @(posedge clk)
+        ack <= rst ? {N{1'b0}} : win;
+
+    // Each cycle's winner, kept until its read data comes back. A cycle
+    // with no winner, or a write, keeps a number too, but the memory
+    // controller gives no rvalid for it.
+    reg  [RD_DELAY*TW-1:0] kept;
+    wire [TW-1:0]          back = kept[RD_DELAY*TW-1 -: TW];
+    generate
+        if (RD_DELAY > 1) begin : shift
+            always @(posedge clk) kept <= {kept[(RD_DELAY-1)*TW-1:0], tag};
+        end else begin : one
+            always @(posedge clk) kept <= tag;
+        end
+    endgenerate
+
+    // Read data back to its requester (rdata itself is shared)
+    genvar g;
+    generate
+        for (g = 0; g < N; g = g + 1) begin : rv
+            assign rvalid_o[g] = rvalid && back == g;
+        end
+    endgenerate
 endmodule
