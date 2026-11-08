@@ -19,7 +19,7 @@ Each machine documents its own instantiation: the registers that drive a core, t
 | Serial link (FIFOs and decoder) | `rtl/serial_link.v` | [spec/serial_link.md](spec/serial_link.md) | [guide/serial_link.md](guide/serial_link.md) |
 | Sprite fetcher | `rtl/sprite_fetch.v` | [spec/sprite_fetch.md](spec/sprite_fetch.md) | [guide/sprite_fetch.md](guide/sprite_fetch.md) |
 | Sprite pixel unit | `rtl/sprite_pix.v` | [spec/sprite_pix.md](spec/sprite_pix.md) | [guide/sprite_pix.md](guide/sprite_pix.md) |
-| Memory-cycle scheduler | `rtl/dmac.v` | [spec/dmac.md](spec/dmac.md) | [guide/dmac.md](guide/dmac.md) |
+| Memory-cycle scheduler (generic: N requesters, S slots) | `rtl/dmac.v` | [spec/dmac.md](spec/dmac.md) | [guide/dmac.md](guide/dmac.md) |
 | Time base | `rtl/timebase.v` | [spec/timebase.md](spec/timebase.md) | [guide/timebase.md](guide/timebase.md) |
 | Layer pixel unit | `rtl/layer_pix.v` | [spec/layer_pix.md](spec/layer_pix.md) | [guide/layer_pix.md](guide/layer_pix.md) |
 | Copper engine | `rtl/copper_engine.v` | [spec/copper_engine.md](spec/copper_engine.md) | [guide/copper_engine.md](guide/copper_engine.md) |
