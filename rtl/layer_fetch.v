@@ -36,8 +36,8 @@ module layer_fetch #(
     parameter TILES    = 0,
     parameter DATWRITE = 0,
     parameter LITTLE   = 0,
-    parameter [10:0] URG_BASE = 15,            // urgent mark: clocks ...
-    parameter [10:0] URG_WORD = 5,                  // ... plus this many a word still to come
+    parameter URG_BASE = 15,                   // urgent mark: clocks ...
+    parameter URG_WORD = 5,                    // ... plus this many a word still to come
     parameter LW       = (NL > 1) ? $clog2(NL) : 1
 ) (
     input  wire              clk,
@@ -443,7 +443,7 @@ module layer_fetch #(
     wire [10:0] n_dl0 = {1'b0, dl[n_layer]};
     wire [10:0] n_dle = (dl[n_layer] == DL_NONE) ? 11'h3FF : n_dl0 + ({5'd0, 6'd59} << hscale[2*n_layer +: 2]);
     wire [10:0] n_dl  = n_ent ? n_dle : n_dl0;
-    wire [10:0] n_mark = URG_BASE + URG_WORD * {6'd0, n_wl};
+    wire [31:0] n_mark = URG_BASE + URG_WORD * {27'd0, n_wl};                        // 32-bit: no width to cut
 
     always @(posedge clk) begin
         lsync   <= {lsync[1:0], line_t};
@@ -456,7 +456,7 @@ module layer_fetch #(
                 first_take[n] <= 1'b0;
             end else if (dl[n] != 10'd0 && dl[n] != DL_NONE) dl[n] <= dl[n] - 1'b1;
 
-        urgent <= !rst && n_req && (n_dl < n_mark);
+        urgent <= !rst && n_req && ({21'd0, n_dl} < n_mark);
 
         if (rst) begin
             req    <= 1'b0;   req_ent <= 1'b0;   req_layer <= {LW{1'b0}};

@@ -42,17 +42,23 @@
 //   NS         sprites built (1-8): the others never start, fetch or show
 //   PW         bits of the line start and pointer (22 or more); memory
 //              addresses are bits 21-1 of it
-//   SWAP_BYTES 1: a word's low byte (the even byte of a little-endian
+//   AW         bits of a memory word address (mem_addr): bits AW..1 of the
+//              pointer
+//   LITTLE     1: a word's low byte (the even byte of a little-endian
 //              memory) goes to the FIFO word's high half, which holds the
 //              first pixels
 //   URGENT     a fetch is marked urgent when its deadline is fewer than
-//              this many units (8 clocks each) away
+//              this many units (8 clocks each) away. mem_urgent is a
+//              register: the compare for the request mem_req carries in
+//              this clock, with the deadline of the clock before, so it is
+//              at most a clock later than the compare itself
 //   MANUAL     1: a sprite with its DMA off can be fed by hand (dat_wr),
 //              and fifo_count reads how many words its FIFO holds
 module sprite_fetch #(
     parameter NS         = 8,
     parameter PW         = 23,
-    parameter SWAP_BYTES = 0,
+    parameter AW         = 21,
+    parameter LITTLE     = 0,
     parameter URGENT     = 5,
     parameter MANUAL     = 1
 ) (
@@ -92,9 +98,8 @@ module sprite_fetch #(
 
     // Scheduler: the sprite channel
     output reg           mem_req,
-    output reg  [21:1]   mem_addr,
-    output wire [9:0]    mem_deadline,
-    output wire          mem_urgent,
+    output reg  [AW-1:0] mem_addr,
+    output reg           mem_urgent,
     input  wire          mem_ack,
     input  wire          mem_rvalid,
     input  wire [15:0]   mem_rdata,
@@ -355,11 +360,14 @@ module sprite_fetch #(
     end
     reg         pk_v;
     reg  [2:0]  req_s;
-    localparam [6:0] URG = URGENT;
-    assign mem_deadline = {dl[req_s], 3'b000};
-    assign mem_urgent   = mem_req && (dl[req_s] < URG);
     wire        issue   = pk_v && active[pk] && !flushing[pk] && alive[pk] && !restart[pk]
                           && (!mem_req || mem_ack) && !bu_busy;
+    // urgent, registered: for the request mem_req carries in the next
+    // clock (the one issued now, or the one still waiting), with the
+    // deadline as it stands in this clock
+    wire        n_req   = !rst && (issue || (mem_req && !mem_ack));
+    wire [2:0]  n_s     = issue ? pk : req_s;
+    always @(posedge clk) mem_urgent <= n_req && ({25'd0, dl[n_s]} < URGENT);   // (32-bit compare: no width to cut)
 
     // The picked sprite's next word
     wire [PW-1:0] p_cur = m_ptr[pk];
@@ -371,7 +379,7 @@ module sprite_fetch #(
     reg  [1:0]  q_h, q_t;
 
     // The FIFOs (the word's high half holds the first pixels)
-    wire [15:0] mem_word = SWAP_BYTES ? {mem_rdata[7:0], mem_rdata[15:8]} : mem_rdata;
+    wire [15:0] mem_word = (LITTLE != 0) ? {mem_rdata[7:0], mem_rdata[15:8]} : mem_rdata;
     generate for (g = 0; g < 8; g = g + 1) begin : fifos
         if (g < NS) begin : on
             reg [15:0] mem [0:31];
@@ -500,7 +508,7 @@ module sprite_fetch #(
             if (issue) begin
                 mem_req  <= 1'b1;
                 req_s    <= pk;
-                mem_addr <= p_cur[21:1];
+                mem_addr <= p_cur[AW:1];
                 q_s[q_t + (mem_ack ? 1'b1 : 1'b0)] <= pk;
                 q_e[q_t + (mem_ack ? 1'b1 : 1'b0)] <= epoch[pk];
                 if (endline) alive[pk] <= 1'b0;   // the line's last word

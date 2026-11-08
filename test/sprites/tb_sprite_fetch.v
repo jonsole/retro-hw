@@ -3,7 +3,7 @@
 // on by YSTEP; the byte swap; a sprite fed by hand (MANUAL); the
 // collisions gathered and cleared.
 //
-// Two cores see the same inputs: one with SWAP_BYTES 0, one with 1. The
+// Two cores see the same inputs: one with LITTLE 0, one with 1. The
 // beam moves on a pixel every 4 clocks. The FIFOs are never read (the read
 // pointers stay at 0), so all the words fetched stay in them.
 `timescale 1ns/1ps
@@ -85,7 +85,7 @@ module tb_sprite_fetch;
     wire [7:0]   p_act;
     wire [79:0]  p_hs;
 
-    sprite_fetch #(.NS(8), .PW(23), .SWAP_BYTES(0), .URGENT(5), .MANUAL(1)) dut (
+    sprite_fetch #(.NS(8), .PW(23), .LITTLE(0), .URGENT(5), .MANUAL(1)) dut (
         .clk(clk), .rst(rst),
         .set_sel(set_sel),
         .set_hstart(r_hs[set_sel]), .set_hstop(r_he[set_sel]),
@@ -96,7 +96,7 @@ module tb_sprite_fetch;
         .start(start), .sel(sel), .lst_cur(lst_cur), .lst_wr(lst_wr), .lst_new(lst_new),
         .fifo_count(fifo_count), .dat_wr(dat_wr), .dat(dat),
         .vblank(vblank), .beam_v(beam_v), .beam_h(beam_h),
-        .mem_req(mem_req), .mem_addr(mem_addr), .mem_deadline(), .mem_urgent(),
+        .mem_req(mem_req), .mem_addr(mem_addr), .mem_urgent(),
         .mem_ack(mem_ack), .mem_rvalid(mem_rvalid), .mem_rdata(mem_rdata),
         .p_hs(p_hs), .p_xe(), .p_act(p_act), .p_lb(), .p_xstep(), .p_depth(), .p_pal(), .p_dma(),
         .fifo_ra(fifo_ra), .fifo_rd(fifo_rd), .wp_g(), .rp_g(48'd0),
@@ -105,7 +105,7 @@ module tb_sprite_fetch;
     );
     // the same, with the bytes swapped (its memory requests are not answered:
     // it sees the first core's acks and data, and asks for the same words)
-    sprite_fetch #(.NS(8), .PW(23), .SWAP_BYTES(1), .URGENT(6), .MANUAL(0)) dut1 (
+    sprite_fetch #(.NS(8), .PW(23), .LITTLE(1), .URGENT(6), .MANUAL(0)) dut1 (
         .clk(clk), .rst(rst),
         .set_sel(set_sel1),
         .set_hstart(r_hs[set_sel1]), .set_hstop(r_he[set_sel1]),
@@ -116,7 +116,7 @@ module tb_sprite_fetch;
         .start(start), .sel(sel), .lst_cur(lst_cur1), .lst_wr(lst_wr), .lst_new(lst_new),
         .fifo_count(fifo_count1), .dat_wr(dat_wr), .dat(dat),
         .vblank(vblank), .beam_v(beam_v), .beam_h(beam_h),
-        .mem_req(mem_req1), .mem_addr(mem_addr1), .mem_deadline(), .mem_urgent(),
+        .mem_req(mem_req1), .mem_addr(mem_addr1), .mem_urgent(),
         .mem_ack(mem_ack), .mem_rvalid(mem_rvalid), .mem_rdata(mem_rdata),
         .p_hs(), .p_xe(), .p_act(), .p_lb(), .p_xstep(), .p_depth(), .p_pal(), .p_dma(),
         .fifo_ra(fifo_ra), .fifo_rd(fifo_rd1), .wp_g(), .rp_g(48'd0),

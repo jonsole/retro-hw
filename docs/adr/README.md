@@ -42,3 +42,9 @@ From the layers grilling and the machines' reviews of the spec, 8 November 2026 
 | [0004](layer_fetch/0004-live-settings.md) | Depth, scale, wrap and stride are read live, on purpose | accepted |
 | [0005](layer_fetch/0005-pointers-not-reset.md) | Reset leaves the pointers and their saved starts alone | accepted |
 | [0006](layer_fetch/0006-no-restart-on-enable-change.md) | A fetch-enable change does not restart a fetch | accepted |
+
+## Sprite fetch (`sprite_fetch/`)
+
+| # | Decision | Status |
+|---|----------|--------|
+| [0001](sprite_fetch/0001-scheduler-side-as-layer-fetch.md) | The sprite fetch's scheduler side matches the layer fetch's | accepted |

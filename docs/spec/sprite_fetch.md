@@ -49,9 +49,8 @@ All ports are in the system clock domain unless the table says otherwise. A stro
 | `vblank` | in | 1 | Strobe: the vertical blank starts; every sprite stops | 1 clock a frame |
 | `beam_v`, `beam_h` | in | 11 | The beam, as seen in the system clock domain: line 0–624, pixel 0–863 (0 = the start of the horizontal blank) | Changes no faster than once every 3 clocks |
 | `mem_req` | out | 1 | A word is wanted | Held until `mem_ack` |
-| `mem_addr` | out | 21 | Its word address (bits 21–1) | Steady while `mem_req` |
-| `mem_deadline` | out | 10 | Clocks until the sprite's FIFO runs dry, in steps of 8 | With `mem_req` |
-| `mem_urgent` | out | 1 | The deadline is under `URGENT` × 8 clocks | With `mem_req` |
+| `mem_addr` | out | AW | Its word address (pointer bits AW–1) | Steady while `mem_req` |
+| `mem_urgent` | out | 1 | The request must not wait: the sprite's deadline is under `URGENT` × 8 clocks. Registered: the compare for the request `mem_req` carries in this clock, with the deadline of the clock before (4.6) | With `mem_req` |
 | `mem_ack` | in | 1 | Strobe: the request is taken | A new request may be made in the same clock |
 | `mem_rvalid` | in | 1 | Strobe: the word of the oldest request still open is on `mem_rdata` | In request order; at most 4 open |
 | `mem_rdata` | in | 16 | The word | With `mem_rvalid` |
@@ -78,8 +77,9 @@ All ports are in the system clock domain unless the table says otherwise. A stro
 |------|---------|---------|-------------|
 | `NS` | 8 | Sprites built (1–8). The others have no FIFO, never start, fetch or show | A small FPGA may build 4 |
 | `PW` | 23 | Bits of the line start and pointer (22 or more). Only bits 21–1 reach memory; the rest is read back | One machine uses 22, another 23 |
-| `SWAP_BYTES` | 0 | 1: a memory word's low byte goes to the FIFO word's high half. Set it where memory is little-endian, so that the byte at the even address holds the first pixels | 1 on a machine with an 8-bit CPU and little-endian SRAM |
-| `URGENT` | 5 | A fetch is urgent when its deadline is under this many units of 8 clocks | 5 or 6, as the scheduler needs |
+| `AW` | 21 | Width of `mem_addr`: a word address, pointer bits AW–1. 21 with `sram_ctl.v` | 21 |
+| `LITTLE` | 0 | 1: a memory word's low byte goes to the FIFO word's high half. Set it where memory is little-endian, so that the byte at the even address holds the first pixels | 1 on a machine with an 8-bit CPU and little-endian SRAM |
+| `URGENT` | 5 | A fetch is urgent when its deadline is under this many units of 8 clocks. Set it from the scheduler's worst-case wait for the sprites (scheduler spec 4.6); the registered `mem_urgent` is at most a clock later than the compare, well inside a unit | 5 (retro68k), 6 (retro-z80) |
 | `MANUAL` | 1 | 1: feeding by hand (`dat_wr`) and `fifo_count`. 0: `dat_wr` is ignored | 0 on a machine without feeding by hand |
 
 ## 4. Behaviour
@@ -109,12 +109,12 @@ All ports are in the system clock domain unless the table says otherwise. A stro
 - A sprite wants a word when its DMA is on, it is not being flushed, the line's words are not all asked for, and its FIFO holds fewer than 30 words with those on their way. (30, not 32: the pick is a clock ahead.)
 - Of the sprites that want a word, the one with the nearest deadline asks next; the lower number wins a tie. The want flags and the pick are both registered, so a request goes out three clocks after a sprite comes to want a word.
 - One request is open at a time: `mem_req` stays up until `mem_ack`. In the clock of `mem_ack` the next request may already be made.
-- Words come back in order on `mem_rvalid`, up to 4 on their way. Each goes into its sprite's FIFO, swapped if `SWAP_BYTES`.
+- Words come back in order on `mem_rvalid`, up to 4 on their way. Each goes into its sprite's FIFO, its bytes swapped if `LITTLE`.
 
 ### 4.5 Deadlines
 
 - A calculator visits a sprite a clock (`set_sel`). From the beam it works out the pixels until the sprite's span (0 if the beam is in it; to the next line's span if past it), adds the pixels its words in hand will last, and turns that into units of 8 clocks at 3.5 clocks a pixel, less 2 units. 292 pixels or more is the largest deadline, 127 units.
-- `mem_deadline` is the asking sprite's deadline × 8; `mem_urgent` is set when it is under `URGENT`.
+- `mem_urgent` is a register: in each clock that `mem_req` is high, it says whether the deadline of the sprite that request is for was under `URGENT` in the clock before (for a request put up in this clock, the deadline the sprite had as it was picked). The deadline changes only when the calculator visits the sprite, every 8 clocks, so this is at most one clock later than a combinational compare. There is no deadline output: the scheduler (`dmac.v`) orders requesters by number, not by deadline.
 
 ### 4.6 Collisions
 
@@ -146,7 +146,9 @@ A wrapper must provide:
 
 ## 6. Test plan
 
-`test/sprites` (Icarus Verilog) runs two cores side by side on one memory model, one with `SWAP_BYTES` 0 and `MANUAL` 1, one with `SWAP_BYTES` 1 and `MANUAL` 0. The beam moves a pixel every 4 clocks; the FIFOs are never read. It checks:
+`test/sprites` (Icarus Verilog) has two tests. `tb_sprite_fetch` runs two cores side by side on one memory model, one with `LITTLE` 0 and `MANUAL` 1, one with `LITTLE` 1 and `MANUAL` 0. The beam moves a pixel every 4 clocks; the FIFOs are never read. It checks:
+
+`tb_lock_sprite` runs the core in lockstep with a frozen copy of its earlier self (`ref/sprite_fetch_ref.v`, from before the scheduler side changed: a `mem_deadline` output and a combinational `mem_urgent`), in retro68k's build (8 sprites, PW 23, `URGENT` 5, `MANUAL`) and retro-z80's (4 sprites, PW 22, `LITTLE`, `URGENT` 6), for 1.2 million clocks each: random settings handed over by `set_sel`, starts, line-start writes, hand-fed words, a 3.7-clock beam, a pixel side that consumes words and acknowledges flushes, and a memory that is busy or quiet by spells. Every clock, every output must be equal; `mem_urgent` is checked against the reference's compare with the deadline of the clock before.
 
 | Check | What |
 |-------|------|

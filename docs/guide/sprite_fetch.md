@@ -20,7 +20,7 @@ Here the settings sit in small RAMs indexed by sprite. Your register bus writes 
 wire [2:0]  cs;                    // the sprite the core looks at this clock
 wire [22:0] lst;                   // line start of sprite `sn`
 
-sprite_fetch #(.NS(8), .PW(23), .SWAP_BYTES(0), .URGENT(5), .MANUAL(0)) spr (
+sprite_fetch #(.NS(8), .PW(23), .AW(21), .LITTLE(0), .URGENT(5), .MANUAL(0)) spr (
     .clk(clk), .rst(rst),
     .set_sel(cs),
     .set_hstart(hstart[cs]), .set_hstop(hstop[cs]),
@@ -32,7 +32,7 @@ sprite_fetch #(.NS(8), .PW(23), .SWAP_BYTES(0), .URGENT(5), .MANUAL(0)) spr (
     .sel(sn), .lst_cur(lst), .lst_wr(pt_written), .lst_new(pt_value),
     .fifo_count(), .dat_wr(1'b0), .dat(16'd0),
     .vblank(vblank_start), .beam_v(beam_v), .beam_h(beam_h),
-    .mem_req(spr_req), .mem_addr(spr_addr), .mem_deadline(spr_deadline),
+    .mem_req(spr_req), .mem_addr(spr_addr),
     .mem_urgent(spr_urgent), .mem_ack(spr_ack), .mem_rvalid(spr_rvalid),
     .mem_rdata(mem_rdata),
     .p_hs(sp_hs), .p_xe(sp_xe), .p_act(sp_act), .p_lb(sp_lb),
@@ -79,7 +79,8 @@ fetching        no ....................yes, from the next line in the window
 
 - **Settings in the same clock.** The `set_` inputs must be sprite `set_sel`'s settings in that same clock: read your RAM combinationally. A registered read gives the core the wrong sprite's settings.
 - **Bits per pixel 3.** `set_bpp` takes 0, 1, 2 (2, 4, 8 bits). If your register has a fourth value, map it first.
-- **Byte order.** The first pixels are in the FIFO word's high half. On a little-endian memory set `SWAP_BYTES` to 1.
+- **Byte order.** The first pixels are in the FIFO word's high half. On a little-endian memory set `LITTLE` to 1.
+- **The urgent mark.** `URGENT` is in units of 8 clocks. Work it out from the scheduler's worst-case wait for the sprite requester in every slot plan the machine uses (scheduler spec 4.6); `mem_urgent` is registered, which adds at most a clock. The scheduler no longer takes a deadline: it orders requesters by number.
 - **HSTART at least 16.** The pixel side takes the settings at beam pixel 12, after the line-start pass.
 - **The line start moves.** Reading it back gives the start of the line being drawn, not the value you wrote. A write makes the next shown line start exactly there.
 - **Starting empties the FIFO.** So does the vertical blank, for every sprite. Start the sprites again each frame (a copper list or the vertical blank interrupt).
