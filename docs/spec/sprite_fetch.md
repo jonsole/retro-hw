@@ -29,7 +29,7 @@ All ports are in the system clock domain unless the table says otherwise. A stro
 |------|-----|-------|---------|--------|
 | `clk` | in | 1 | System clock | |
 | `rst` | in | 1 | Reset, synchronous | Held for at least a clock |
-| `set_sel` | out | 3 | The sprite whose settings the core takes in this clock | Counts 0–7, one a clock, from reset |
+| `set_sel` | out | 3 | The sprite whose settings the core takes in this clock. The core registers them and works on them in the next clock, so `set_sel` runs one sprite ahead of its calculator | Counts 0–7, one a clock, from reset |
 | `set_hstart`, `set_hstop` | in | 11 | Sprite `set_sel`'s window across, beam pixels | Same clock as `set_sel` (combinational read) |
 | `set_vstart`, `set_vstop` | in | 11 | ... down, beam lines (VSTOP is the first line not shown) | Same clock |
 | `set_bpp` | in | 2 | 0: 2 bits, 1: 4 bits, 2: 8 bits a pixel. 3 is not allowed | Same clock |
@@ -86,7 +86,7 @@ All ports are in the system clock domain unless the table says otherwise. A stro
 
 ### 4.1 Settings
 
-- `set_sel` counts 0, 1, … 7, 0, … one a clock, from power-on. The machine puts sprite `set_sel`'s settings on the `set_` inputs in the same clock, read straight from its registers (a distributed RAM read is fine). The machine may use `set_sel` to clear its registers during reset, one a clock.
+- `set_sel` counts 0, 1, … 7, 0, … one a clock, from power-on. The machine puts sprite `set_sel`'s settings on the `set_` inputs in the same clock, read straight from its registers (a distributed RAM read is fine: it has the whole clock, as the core registers the inputs). The core works on sprite n's settings in the clock after it took them, which is why `set_sel` is one ahead. A write to a sprite's settings that lands in the very clock they are handed over is seen at the sprite's next visit: 8 clocks later, or on the next line if that visit was the one in the update window (4.2). The machine may use `set_sel` to clear its registers during reset, one a clock.
 - A size calculator takes them in three stages. It writes its results only while `beam_h` is 840–847. Each sprite is visited at least once in that window, so the next line uses settings from that window, and the fetcher and the pixel side always agree.
 - Clamps: HSTART and HSTOP to 864; HSTOP below HSTART to HSTART; VSTOP to 625. Steps: 0 is `0x0800`; under `0x0080` is `0x0080`; over `0x8000` is `0x8000`.
 - Words per image line, `wf` = ceil(ceil((HSTOP − HSTART) × XSTEP / 2048) × bits / 16), using the window as written. Words per shown line, `wv`, the same over the clamped window, never more than `wf`. Both at most 4095.
@@ -134,7 +134,7 @@ All ports are in the system clock domain unless the table says otherwise. A stro
 
 A wrapper must provide:
 
-- The registers for each sprite's window, steps, bits per pixel, depth and palette, readable at `set_sel` in the same clock. A distributed RAM with one write a clock is enough. If the machine has a fourth bits-per-pixel value, it maps it before `set_bpp`.
+- The registers for each sprite's window, steps, bits per pixel, depth and palette, readable at `set_sel` in the same clock. A distributed RAM with one write a clock is enough, read combinationally: the core registers what it reads. If the machine has a fourth bits-per-pixel value, it maps it before `set_bpp`.
 - The line start's register: reads come from `lst_cur` with `sel` set to the sprite; a write of part of it merges into `lst_cur` and is written whole with `lst_wr`.
 - A start strobe when the program starts a sprite (for example on a write of its control register).
 - The per-sprite DMA enables (`dma_mask`) and the master enable (`dma_on`).
@@ -148,7 +148,7 @@ A wrapper must provide:
 
 `test/sprites` (Icarus Verilog) has two tests. `tb_sprite_fetch` runs two cores side by side on one memory model, one with `LITTLE` 0 and `MANUAL` 1, one with `LITTLE` 1 and `MANUAL` 0. The beam moves a pixel every 4 clocks; the FIFOs are never read. It checks:
 
-`tb_lock_sprite` runs the core in lockstep with a frozen copy of its earlier self (`ref/sprite_fetch_ref.v`, from before the scheduler side changed: a `mem_deadline` output and a combinational `mem_urgent`), in retro68k's build (8 sprites, PW 23, `URGENT` 5, `MANUAL`) and retro-z80's (4 sprites, PW 22, `LITTLE`, `URGENT` 6), for 1.2 million clocks each: random settings handed over by `set_sel`, starts, line-start writes, hand-fed words, a 3.7-clock beam, a pixel side that consumes words and acknowledges flushes, and a memory that is busy or quiet by spells. Every clock, every output must be equal; `mem_urgent` is checked against the reference's compare with the deadline of the clock before.
+`tb_lock_sprite` runs the core in lockstep with a frozen copy of its earlier self (`ref/sprite_fetch_ref.v`, from before the scheduler side changed: a `mem_deadline` output and a combinational `mem_urgent`), in retro68k's build (8 sprites, PW 23, `URGENT` 5, `MANUAL`) and retro-z80's (4 sprites, PW 22, `LITTLE`, `URGENT` 6), for 1.2 million clocks each: random settings handed over by `set_sel`, starts, line-start writes, hand-fed words, a 3.7-clock beam, a pixel side that consumes words and acknowledges flushes, and a memory that is busy or quiet by spells. Every clock, every output must be equal; `mem_urgent` is checked against the reference's compare with the deadline of the clock before, and `set_sel` against the reference's plus one. The bench never writes a sprite's settings in the clock they are handed over, the one case where the core would see the write a visit later than the reference did.
 
 | Check | What |
 |-------|------|

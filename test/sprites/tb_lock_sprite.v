@@ -5,7 +5,9 @@
 // must agree on every output. The two allowed differences are the change
 // itself: the core has no mem_deadline, and its mem_urgent is a register,
 // checked here against the reference's compare with the deadline of the
-// clock before (spec 4.6). The build (-P) follows a machine's: retro68k's
+// clock before (spec 4.6); and its set_sel runs one sprite ahead, as it
+// registers the settings (so this bench never writes a sprite's settings
+// in its hand-over clock). The build (-P) follows a machine's: retro68k's
 // by default, retro-z80's with NS 4, PW 22, LITTLE, URGENT 6, no MANUAL.
 //
 // The test bench stands in for the machine: a register file of sprite
@@ -27,12 +29,18 @@ module tb_lock_sprite;
     reg  [1:0]  s_bpp [0:7], s_depth [0:7];
     reg  [3:0]  s_pal [0:7];
     reg  [15:0] s_xstep [0:7], s_ystep [0:7];
+    // ... read for the sprite each core names (the core runs one ahead)
     wire [2:0]  r_set_sel, c_set_sel;
     wire [10:0] set_hstart = s_hstart[r_set_sel], set_hstop = s_hstop[r_set_sel];
     wire [10:0] set_vstart = s_vstart[r_set_sel], set_vstop = s_vstop[r_set_sel];
     wire [1:0]  set_bpp = s_bpp[r_set_sel], set_depth = s_depth[r_set_sel];
     wire [3:0]  set_pal = s_pal[r_set_sel];
     wire [15:0] set_xstep = s_xstep[r_set_sel], set_ystep = s_ystep[r_set_sel];
+    wire [10:0] cset_hstart = s_hstart[c_set_sel], cset_hstop = s_hstop[c_set_sel];
+    wire [10:0] cset_vstart = s_vstart[c_set_sel], cset_vstop = s_vstop[c_set_sel];
+    wire [1:0]  cset_bpp = s_bpp[c_set_sel], cset_depth = s_depth[c_set_sel];
+    wire [3:0]  cset_pal = s_pal[c_set_sel];
+    wire [15:0] cset_xstep = s_xstep[c_set_sel], cset_ystep = s_ystep[c_set_sel];
 
     reg          dma_on = 1'b1;
     reg  [7:0]   dma_mask = 8'hFF, start = 8'd0, coll_t_in = 1'b0, flush_ack_t = 8'd0;
@@ -74,8 +82,8 @@ module tb_lock_sprite;
 
     sprite_fetch #(.NS(NS), .PW(PW), .AW(21), .LITTLE(LITTLE), .URGENT(URGENT), .MANUAL(MANUAL)) dut (
         .clk(clk), .rst(rst), .set_sel(c_set_sel),
-        .set_hstart(set_hstart), .set_hstop(set_hstop), .set_vstart(set_vstart), .set_vstop(set_vstop),
-        .set_bpp(set_bpp), .set_depth(set_depth), .set_pal(set_pal), .set_xstep(set_xstep), .set_ystep(set_ystep),
+        .set_hstart(cset_hstart), .set_hstop(cset_hstop), .set_vstart(cset_vstart), .set_vstop(cset_vstop),
+        .set_bpp(cset_bpp), .set_depth(cset_depth), .set_pal(cset_pal), .set_xstep(cset_xstep), .set_ystep(cset_ystep),
         .dma_on(dma_on), .dma_mask(dma_mask), .start(start), .sel(sel), .lst_cur(c_lst), .lst_wr(lst_wr), .lst_new(lst_new),
         .fifo_count(c_cnt), .dat_wr(dat_wr), .dat(dat), .vblank(vblank), .beam_v(beam_v), .beam_h(beam_h),
         .mem_req(c_req), .mem_addr(c_addr), .mem_urgent(c_urg),
@@ -165,9 +173,13 @@ module tb_lock_sprite;
             r = $random;
             sel <= $random;
             fifo_ra <= {$random, $random};
-            // Settings: changed one at a time, now and then
+            // Settings: changed one at a time, now and then. Not in the
+            // clock a sprite is handed over to the core: it registers them
+            // and would see the write a visit later than the reference
+            // (the one allowed difference besides urgent, spec 4.2)
             if (r[7:0] < 8'd3) begin
                 j = {$random} % 8;
+                if (j == c_set_sel) j = (j + 1) % 8;
                 case ({$random} % 7)
                     0: s_hstart[j] <= ({$random} % 4 == 0) ? $random : 11'd16 + ({$random} % 800);
                     1: s_hstop[j]  <= ({$random} % 4 == 0) ? $random : s_hstart[j] + ({$random} % 300);
@@ -204,7 +216,7 @@ module tb_lock_sprite;
     endtask
     always @(negedge clk) if (!rst) begin
         checks = checks + 1;
-        if (c_set_sel !== r_set_sel) fail("set_sel", c_set_sel, r_set_sel);
+        if (c_set_sel !== r_set_sel + 3'd1) fail("set_sel", c_set_sel, r_set_sel + 3'd1);     // the core runs one sprite ahead
         if (c_lst !== r_lst) fail("lst_cur", c_lst, r_lst);
         if (c_cnt !== r_cnt) fail("fifo_count", c_cnt, r_cnt);
         if (c_req !== r_req) fail("mem_req", c_req, r_req);

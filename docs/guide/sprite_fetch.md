@@ -14,7 +14,7 @@ The spec is `docs/spec/sprite_fetch.md`.
 
 ## A minimal instantiation
 
-Here the settings sit in small RAMs indexed by sprite. Your register bus writes them; the core reads them at `set_sel`.
+Here the settings sit in small RAMs indexed by sprite. Your register bus writes them; the core reads them at `set_sel`, one sprite ahead of where it is working, and registers them.
 
 ```verilog
 wire [2:0]  cs;                    // the sprite the core looks at this clock
@@ -77,7 +77,8 @@ fetching        no ....................yes, from the next line in the window
 
 ## Pitfalls
 
-- **Settings in the same clock.** The `set_` inputs must be sprite `set_sel`'s settings in that same clock: read your RAM combinationally. A registered read gives the core the wrong sprite's settings.
+- **Settings in the same clock.** The `set_` inputs must be sprite `set_sel`'s settings in that same clock: read your RAM combinationally. Don't register the read in your wrapper: the core does that, and a second register would hand it the wrong sprite's settings. The read has the whole clock, so it won't be your critical path.
+- **A write in the hand-over clock.** A settings write that lands in the clock its sprite is handed over is taken up at the sprite's next visit, 8 clocks later (next line, if that visit was the window's). Software writing settings in the blank never notices.
 - **Bits per pixel 3.** `set_bpp` takes 0, 1, 2 (2, 4, 8 bits). If your register has a fourth value, map it first.
 - **Byte order.** The first pixels are in the FIFO word's high half. On a little-endian memory set `LITTLE` to 1.
 - **The urgent mark.** `URGENT` is in units of 8 clocks. Work it out from the scheduler's worst-case wait for the sprite requester in every slot plan the machine uses (scheduler spec 4.6); `mem_urgent` is registered, which adds at most a clock. The scheduler no longer takes a deadline: it orders requesters by number.

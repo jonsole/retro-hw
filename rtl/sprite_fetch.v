@@ -5,7 +5,13 @@
 // Eight sprites (NS of them built). The machine keeps each sprite's
 // settings (window, depth, palette, bits per pixel, steps) in its own
 // registers and hands them over a sprite a clock: set_sel names the
-// sprite, and the set_ inputs are its settings in that clock. The line
+// sprite, and the set_ inputs are its settings in that clock. The core
+// registers them and works on them in the next clock, so set_sel runs one
+// sprite ahead of the calculator; the machine's settings read (a RAM or a
+// mux) gets a whole clock. A write to a sprite's settings that lands in
+// the very clock they are handed over is seen at the sprite's next visit,
+// 8 clocks later (or the next line, if that visit was the one that
+// counts). The line
 // start (the pointer into the image) lives here, as the line-start pass
 // moves it on; the machine reads it and writes it through sel, lst_cur and
 // lst_wr. Each sprite has a 32-word FIFO. The fetcher fetches each line's
@@ -163,7 +169,15 @@ module sprite_fetch #(
     reg  signed [3:0] wsh [0:7];               // log2 of screen pixels per word, rounded down (for the deadlines)
     reg  [11:0] wf [0:7], wv [0:7];            // words per image line; per shown line
     reg  [2:0]  cs = 3'd0;
-    assign set_sel = cs;
+    assign set_sel = cs + 3'd1;                // one ahead: the settings are registered below
+    reg  [10:0] i_hstart, i_hstop, i_vstart, i_vstop;
+    reg  [1:0]  i_bpp, i_depth;
+    reg  [3:0]  i_pal;
+    reg  [15:0] i_xstep, i_ystep;
+    always @(posedge clk) begin
+        i_hstart <= set_hstart;  i_hstop <= set_hstop;  i_vstart <= set_vstart;  i_vstop <= set_vstop;
+        i_bpp <= set_bpp;  i_depth <= set_depth;  i_pal <= set_pal;  i_xstep <= set_xstep;  i_ystep <= set_ystep;
+    end
     wire        upd = (beam_h >= 11'd840) && (beam_h < 11'd848);
     reg  [1:0]  upd_d;                         // ... two clocks on, for stage 3
     always @(posedge clk) upd_d <= {upd_d[0], upd};
@@ -192,10 +206,10 @@ module sprite_fetch #(
         reg [15:0] xs;
         reg [17:0] srcf, srcs;
         reg [20:0] bf, bs;
-        // stage 1
-        hs = set_hstart; he = set_hstop; vs = set_vstart; ve = set_vstop;
-        bpp = set_bpp;
-        xs  = lim(set_xstep);
+        // stage 1 (on the registered settings of sprite cs)
+        hs = i_hstart; he = i_hstop; vs = i_vstart; ve = i_vstop;
+        bpp = i_bpp;
+        xs  = lim(i_xstep);
         // all in beam coordinates: the line is beam pixels 0-863, the frame lines 0-624
         hsc   = (hs > 11'd864) ? 11'd864 : hs;
         xec   = (he > 11'd864) ? 11'd864 : (he < hsc) ? hsc : he;
@@ -203,10 +217,10 @@ module sprite_fetch #(
         if (upd) begin
             r_vs[cs]    <= vs;
             r_bpp[cs]   <= bpp;
-            r_depth[cs] <= set_depth;
-            r_pal[cs]   <= set_pal;
+            r_depth[cs] <= i_depth;
+            r_pal[cs]   <= i_pal;
             r_xs[cs]    <= xs;
-            r_ys[cs]    <= lim(set_ystep);
+            r_ys[cs]    <= lim(i_ystep);
             hs_t[cs]    <= hsc[9:0];
             xe_t[cs]    <= xec[9:0];
             wsh[cs]     <= $signed({2'b00, 2'd3 - bpp}) + mag(xs);

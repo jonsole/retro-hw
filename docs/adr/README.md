@@ -48,3 +48,4 @@ From the layers grilling and the machines' reviews of the spec, 8 November 2026 
 | # | Decision | Status |
 |---|----------|--------|
 | [0001](sprite_fetch/0001-scheduler-side-as-layer-fetch.md) | The sprite fetch's scheduler side matches the layer fetch's | accepted |
+| [0002](sprite_fetch/0002-settings-registered-one-ahead.md) | The settings are registered at the core's input, with `set_sel` one sprite ahead | accepted |
