@@ -91,7 +91,7 @@ A `pop` while `valid` is 0 does nothing. `rdata` keeps the last byte it held.
 
 ### 4.5 Reset
 
-`rst` empties the FIFO at the next edge: pointers and counts 0, `valid` 0. The RAM and `rdata` keep their contents. A reset is also the way to flush the FIFO.
+`rst` empties the FIFO at the next edge: pointers and counts 0, `valid` 0. The RAM and `rdata` have no reset. A push or a refill in the reset clock still happens on the RAM side, so `rdata` may change at that edge; `valid` is 0 after it, so nothing reads it. A reset is also the way to flush the FIFO.
 
 ## 5. How a machine uses it
 
@@ -103,21 +103,20 @@ A `pop` while `valid` is 0 does nothing. `rdata` keeps the last byte it held.
 
 ## 6. Test plan
 
-There is no unit test in `test/` yet (open point F1). The FIFO is tested inside each machine:
+| Test | What it covers |
+|------|----------------|
+| `test/fifo8` | Run at AW = 1, 2 and 3 against a queue model, checked after every edge: `count`, `full`, `valid`, and `rdata` (the oldest byte while `valid`, the last byte held while not). Directed parts: the table of 4.2, pops while empty, a steady stream of one push a clock, filling to 2^AW + 1, pushes while full with no pop (dropped) and with a pop (taken), a push and a pop together at every fill level, reset while full and while streaming. Then 18,000 clocks of random pushes and pops at nine rates, with random resets. Counters make sure each of these cases came up |
+| The serial unit's testbench (`make serial`) | retro-z80: bytes in order through the receive FIFO, flushes |
+| The whole-system tests ("hello", the monitor session) | Both machines: every byte of the console through both FIFOs, against the FT232H model |
+| The board | Both machines: the console over USB, every boot |
 
-| Test | Machine | What it covers |
-|------|---------|----------------|
-| The serial unit's testbench (`make serial`) | retro-z80 | Bytes in order through the receive FIFO, flushes |
-| The whole-system tests ("hello", the monitor session) | Both | Every byte of the console through both FIFOs, against the FT232H model |
-| The board | Both | The console over USB, every boot |
-
-Neither covers a full FIFO well: a push while full, the drop-oldest case, and `count` at 2^AW + 1.
+The unit test runs the RTL in simulation, which reads the old byte when a push and a refill use the same address (F2). It does not show that Vivado's block RAM does the same.
 
 ## 7. Open points
 
 | # | Item |
 |---|------|
-| F1 | Proposed: a unit test `test/fifo8/` with a small AW (2 or 3) against a queue model: random push and pop, push into empty, push and pop together at every fill level, full with and without a pop, pop while empty, `count` against the model each clock, reset |
+| F1 | Done: `test/fifo8/` (section 6) |
 | F2 | When full, a push and a refill use the same RAM address in the same clock. The RTL reads the old byte (Verilog non-blocking order), which needs the block RAM in read-first mode. Check that Vivado infers that (or that the netlist simulates the same), since a drop-oldest mode in a serial unit hits this case |
 | F3 | The FIFO holds 2^AW + 1 bytes, one more than a power of two. A machine that says "2 KB" must saturate `count` (both machines do) |
 | F4 | No overflow flag. A machine that wants to count dropped bytes does it outside, from `push` and `full` |
