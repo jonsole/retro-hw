@@ -20,4 +20,4 @@ The first 15 were written after the fact, on 8 November 2026, for the scheduler 
 | [0012](0012-separate-address-ports.md) | Each requester keeps its own address and data ports | Accepted |
 | [0013](0013-park-12-5-ns.md) | Park the 12.5 ns memory cycle; plan revision 1.1 | Accepted (parked) |
 | [0014](0014-spec-lock.md) | Lock the dmac spec | Accepted |
-| [0015](0015-mask-first-winner.md) | Choose the request mask first, then find its lowest bit once | Proposed (PR #4) |
+| [0015](0015-mask-first-winner.md) | Choose the request mask first, then find its lowest bit once | Accepted |
