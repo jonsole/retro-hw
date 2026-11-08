@@ -83,6 +83,7 @@ irq_set[n] ______________________ ... ____/~~~\__   (if the job asks)
 
 ## Pitfalls
 
+- **Register a request you pass on from the other port.** `xp_req` and `xp_addr` come out of long logic. Fed straight into a register bus or another mux, they make a path of over 20 levels that misses 100 MHz (found by retro68k: −0.170 ns). Hold the request in a register until the far side takes it.
 - **Hold the job ports.** Change them only while `su_v` is high. The core reads them for the whole job, not only at the start, and sets up again whenever a channel comes back after another one's turn.
 - **Byte order.** `LE` must match what the CPU sees: with `LE` set the byte at an even address is bits 7-0 of a memory word. Descriptors and EDGES' coordinates come through as stored, so a 16-bit field in them is in the memory's order.
 - **Strobes win.** A strobe in the same clock as the engine's own change wins (a clear of `done` as a job ends leaves it clear). An interrupt flag register written in the clock `irq_set` comes up should still take the new flag, or the interrupt is lost.
