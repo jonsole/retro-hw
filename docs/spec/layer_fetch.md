@@ -29,15 +29,15 @@ Layer n's signals are bit n, or field n, of each per-layer port (bits n×W to n�
 Settings are read at one of two times, kept as both machines do today:
 
 - **Copied at `line_go`:** the value at the line's start holds for the whole line, so a change mid-line (a CPU or copper write) applies from the next line.
-- **Read live:** a change applies the next time the core uses the setting, mid-line included. The Timing column says when that is.
+- **Read live:** a change applies the next time the core uses the setting, mid-line included. The Timing column says when that is. This is deliberate: a copper or CPU write can change these settings mid-line for an effect.
 
 | Name | Dir | Width | Meaning | Timing |
 |------|-----|-------|---------|--------|
 | `clk` | in | 1 | System clock | – |
-| `rst` | in | 1 | Reset: no request, every count and pointer 0, data registers 0, deadlines none | Synchronous |
+| `rst` | in | 1 | Reset: no request, counts and toggles cleared, data registers 0, deadlines none. Pointers and saved starts are not reset (4.9) | Synchronous |
 | `enable` | in | 1 | The fetch may run (video on, and the machine's DMA enables). A line starts with no groups to fetch while it is low | Copied at `line_go`; with `DATWRITE`, also read live (4.6) |
 | `line_t` | in | 1 | Toggles at the start of each horizontal blank, in the pixel clock | Any |
-| `line_go` | out | 1 | One clock: a new line has started here (`line_t` seen to toggle) | – |
+| `line_go` | out | 1 | One clock: a new line has started here (`line_t` seen to toggle, through a two-flip-flop synchroniser) | – |
 | `line_gen` | out | 1 | Toggles with `line_go` | – |
 | `act` | in | NL | The layer shows on the line about to be fetched | Copied at `line_go` |
 | `adv` | in | NL | Its pointers move on to the next source line after this line (else back to this line's start: a repeated line of a vertically scaled layer) | Copied at `line_go` |
@@ -45,7 +45,7 @@ Settings are read at one of two times, kept as both machines do today:
 | `planar` | in | NL | `PLANAR`: the layer is planar, one pointer per plane | Read live, when a word is picked |
 | `hscale` | in | 2×NL | log2 of the horizontal scale. Sets how long a group lasts (4.4) | Read live, when a group is taken (and for a map entry's deadline) |
 | `wrap` | in | 4×NL | 0: no wrap. n: the layer's pointers wrap within an aligned block of 2^(n+9) bytes | Read live, on every pointer move |
-| `stride` | in | 16×NL | Signed byte stride from one source line's start to the next. Bit 0 is ignored | Read live, at the line's last word from a pointer: a change mid-line applies at that line's end |
+| `stride` | in | 16×NL | Signed byte stride from one source line's start to the next. Bit 0 is ignored | Read live, when each pointer's last word of the line is set up (4.8): a change mid-line applies at that line's end |
 | `ngroups` | in | 12×NL | Groups to fetch on the line (whole groups covering the window and fine scroll) | Copied at `line_go` |
 | `tile` | in | NL | `TILES`: the layer is a tile map | Copied at `line_go` |
 | `mapw` | in | 2×NL | `TILES`: map width, 0: 32, 1: 64, 2 or 3: 128 entries | Copied at `line_go` |
@@ -53,14 +53,14 @@ Settings are read at one of two times, kept as both machines do today:
 | `tcol` | in | 7×NL | `TILES`: the map column of the line's first group's tile column 0 | Copied at `line_go` |
 | `mappt` | in | PW×NL | `TILES`: byte address of the map's first entry | Copied at `line_go` |
 | `patpt` | in | PW×NL | `TILES`: byte address of tile 0's first byte | Copied at `line_go` |
-| `ptr_sel` | in | LW+3 | The pointer for `ptr_wr` and `ptr_rdata`: {layer, plane}. Plane is 0 for a chunky or tile layer, and without `PLANAR` | Any |
+| `ptr_sel` | in | LW+3 | The pointer for `ptr_wr` and `ptr_rdata`: {layer, plane}. With `PLANAR` it reaches all 8 pointers of every layer, a chunky layer's too (the fetch itself uses plane 0 of a chunky or tile layer). Without `PLANAR`, plane is ignored | Any |
 | `ptr_wr` | in | 1 | Write `ptr_wdata` to that pointer and to its saved line start (4.3). Restarts a fetch being set up, for any layer | One clock a write |
 | `ptr_wdata` | in | PW | Byte address; bit 0 is stored as 0 | With `ptr_wr` |
-| `ptr_rdata` | out | PW | That pointer's live value | Combinational from `ptr_sel` |
+| `ptr_rdata` | out | PW | That pointer's live value | Combinational from `ptr_sel`; a machine whose bus reads a clock later registers it |
 | `dat_wr` | in | 1 | `DATWRITE`: write a data register | One clock a write |
 | `dat_sel` | in | LW+3 | `DATWRITE`: {layer, data register} | With `dat_wr` |
 | `dat_wdata`, `dat_be` | in | 16, 2 | `DATWRITE`: the data, and its byte enables (bit 1 the upper byte) | With `dat_wr` |
-| `dma_en` | in | 8×NL | `DATWRITE`: bit p: the fetch fills data register p of the layer. Chunky: bit 0 for the whole layer. Without `DATWRITE` every register is filled | Read live; a change restarts a fetch being set up, for any layer (4.6) |
+| `dma_en` | in | 8×NL | `DATWRITE`: bit p: the fetch fills data register p of the layer. Chunky: bit 0 for the whole layer. Without `DATWRITE` every register is filled | Read live: a group uses the enables registered the clock before it starts (4.6) |
 | `dat_rdata` | out | 16 | `DATWRITE`: the data register `dat_sel` names | Combinational from `dat_sel` |
 | `dat` | out | 128×NL | The data registers to `layer_pix`: layer n register r in bits 128n + 16r to 128n + 16r + 15 | Stable while the layer is full |
 | `attr` | out | 10×NL | `TILES`: the group's {PRI, PAL} for tile column 1 (bits 9–5) and column 0 (bits 4–0) | With `dat` |
@@ -95,7 +95,7 @@ Settings are read at one of two times, kept as both machines do today:
 
 | When | What happens |
 |------|--------------|
-| `line_t` toggles | Once it has passed the two-flip-flop synchroniser, `line_go` is high for one clock |
+| `line_t` toggles | It passes a two-flip-flop synchroniser, then `line_go` is high for one clock. (Both machines' `bpldma.v` used one flip-flop; the core's `line_go` is one clock later than theirs, which is harmless in the blank) |
 | `line_go` | The line starts. For each layer: if `enable` and `act` and `ngroups` > 0, it has `ngroups` groups to fetch (a tile layer one more, 4.5), else none. Any request not yet given is dropped, reads on their way are ignored when they come back (4.7), and the fill toggle is set equal to the take toggle seen, so a spare group from the last line is dropped. Deadlines go to none. The line settings are taken |
 | Then | The layers ask for their groups, words in turn (4.2, 4.4). A layer starts a group when it has groups left, its last group has all come back, and its data registers are not full (`layer_pix` hasn't taken the last group yet) |
 | A group's last word comes back | `fill_t` toggles |
@@ -119,23 +119,25 @@ Each pointer (one a plane with `PLANAR`, else one a layer) is a byte address, `P
 - With `wrap` = n > 0, the bits from 9 + n up don't change on any of these moves: the pointer stays in its aligned block.
 - A `ptr_wr` sets both the pointer and its saved start, and wins over the fetch's own move in that clock. A fetch being set up in that clock starts again (4.8), whichever layer it is for.
 
-So how many words a line reads (whole groups, fine scroll) never matters to where the next line starts. A tile layer's pointer doesn't move (4.5).
+So how many words a line reads (whole groups, fine scroll) never matters to where the next line starts, as long as the line's last word is asked for before the next `line_go`. If it isn't (a starved fetch, or `dma_en` cleared mid-line), the pointer stays where it stopped, with no stride. A `ptr_wr` with any byte of the pointer counts as a write and sets the saved start too; a machine merging a partial write gives the whole merged value. A tile layer's pointer doesn't move (4.5).
 
 ### 4.4 Deadlines and the layer choice
 
 Each layer has a deadline: system clocks until the group it took last is used up, so the next one must be in by then.
 
 - At `line_go` every deadline is none (10'h3FF).
-- When `layer_pix` takes a group, the deadline loads 59 × 2^hscale clocks (a group of 16 source pixels at about 3.7 system clocks a screen pixel; a tile group is 16 source pixels too), except for the line's first take, the group loaded ahead of the window, which leaves it none.
+- When `layer_pix` takes a group (seen when the take toggle has passed its synchroniser, about 3 clocks after `take_t` toggles), the deadline loads 59 × 2^hscale clocks (a group of 16 source pixels at about 3.7 system clocks a screen pixel; a tile group is 16 source pixels too), except for the line's first take, the group loaded ahead of the window, which leaves it none.
 - It counts down by 1 a clock, to 0, and stays there. None stays none.
 
 **Which layer asks next:** of the layers with a group being fetched or ready to start one, the one with the smallest deadline; on a tie, the next after the last layer served, in round-robin order. The deadlines are compared a clock before they are used (for timing): a decision can be a clock late, never wrong in a way that matters.
 
 **Urgent:** a request is urgent when its layer's deadline is under the mark:
 
-  mark = `URG_BASE` + `URG_WORD` × (words of the group still to ask for, this one included)
+  mark = `URG_BASE` + `URG_WORD` × (words of the layer's group not yet through stage B (4.8), plus 1)
 
-`urgent` is a register. In each clock that `req` is high, it is the comparison for that request using the deadline and words left of the clock before. A deadline drops by at most 1 a clock, so `urgent` is at most one clock later than a combinational compare would be; `URG_BASE` is one higher than a combinational mark to allow for it. In its first clock, a new request's `urgent` is worked out for that request, not the one before. It is 0 while `req` is 0.
+A word waiting in the holding place has already passed B, so it isn't counted.
+
+`urgent` is a register. In each clock that `req` is high, it is the comparison for that request using the deadline and words left of the clock before. A deadline drops by at most 1 a clock, so `urgent` is at most one clock later than a combinational compare would be; `URG_BASE` is one higher than a combinational mark to allow for it. In its first clock, a new request's `urgent` is worked out for that request, not the one before; that includes a new request put up in the clock after an `ack`, when `req` stays high. It is 0 while `req` is 0.
 
 ### 4.5 Tile layers (`TILES`)
 
@@ -161,9 +163,9 @@ A map entry's request is due a group later than the layer's deadline (the next g
 
 ### 4.6 Data-register writes (`DATWRITE`)
 
-- `dat_wr` writes a data register, byte by byte (`dat_be`). It wins over a word arriving for the same register in that clock.
-- With no register of the layer fetched (`dma_en` filling none, or `enable` low at the line's start), a write of register 0's low byte makes the group complete: `fill_t` is set so that the layer is full. So software or a copper can drive a layer's pixels with no memory reads.
-- A change to `dma_en`, or a `ptr_wr`, while a fetch is being set up starts that fetch again, so the request uses the new settings.
+- `dat_wr` writes a data register, byte by byte (`dat_be`). Against a word arriving for the same register in that clock it wins byte by byte: a one-byte write keeps the arriving word's other byte.
+- With no register of the layer fetched, judged live (`enable` low, or `dma_en` filling none of the layer's registers), a write of register 0's low byte makes the group complete: `fill_t` is set so that the layer is full. So software or a copper can drive a layer's pixels with no memory reads.
+- A group uses the `dma_en` bits registered the clock before it starts, and keeps its own list of words to fetch. A change mid-group applies from the layer's next group; it doesn't restart a fetch.
 
 ### 4.7 Reads on their way
 
@@ -171,11 +173,11 @@ Up to four reads can be on their way. Each carries the layer, the register (or e
 
 ### 4.8 How a fetch is set up
 
-A fetch takes two clocks: A picks the layer and its register, and reads its pointer and saved start; B works out the address and the pointer's next value, writes it, moves the group counts on, and puts up the request (or holds it in a one-entry holding place while `req` waits for its `ack`, so the next request is ready when the scheduler takes this one). Memory cycles are two clocks apart, so this costs no bandwidth. B waits while the holding place is full and `req` has not been taken, and a group start in B waits until the layer still has groups left. `line_go`, a `ptr_wr` or a `dma_en` change in B sends it back to A, whichever layer they concern.
+A fetch takes two clocks: A picks the layer and its register, and reads its pointer and saved start; B works out the address and the pointer's next value, writes it, moves the group counts on, and puts up the request (or holds it in a one-entry holding place while `req` waits for its `ack`, so the next request is ready when the scheduler takes this one). Memory cycles are two clocks apart, so this costs no bandwidth. A doesn't start in a clock with `line_go` or a `ptr_wr`. B waits while the holding place is full and `req` has not been taken, and a group start in B waits until the layer still has groups left. `line_go` or a `ptr_wr` in B sends it back to A, whichever layer it concerns.
 
 ### 4.9 Reset
 
-`rst` clears every count, deadline, toggle and pointer, the data registers and the request. Nothing is fetched until a line starts.
+`rst` clears every count, deadline and toggle, the data registers and the request, and sets the round-robin's last layer served to NL − 1. It does **not** clear the pointers or their saved starts (retro68k keeps them in LUT RAM; clearing them would cost about 1,100 flip-flops in a planar build), nor the synchronisers. Software loads the pointers before use. Nothing is fetched until a line starts.
 
 ## 5. How a machine uses it
 
@@ -190,7 +192,7 @@ A fetch takes two clocks: A picks the layer and its register, and reads its poin
 
 | Test | What it checks |
 |------|----------------|
-| `test/layer_fetch`, lockstep | The new core beside copies of retro68k's and retro-z80's `bpldma.v` (in the test folder only), each built to match (retro68k: `PLANAR`, `DATWRITE`, PW 23; retro-z80: `TILES`, `LITTLE`), on the same random settings, pointer writes, data-register writes, takes and memory. Every clock: `dat`, `attr`, `fill_t`, `req`, `addr`, `line_go`, `line_gen` and the pointers equal. `urgent` against the reference's compare made a clock earlier with the mark + 1. The reference's `deadline` is not compared |
+| `test/layer_fetch`, lockstep | The new core beside copies of retro68k's and retro-z80's `bpldma.v` (in the test folder only), each built to match (retro68k: `PLANAR`, `DATWRITE`, PW 23; retro-z80: `TILES`, `LITTLE`), on the same random settings, pointer writes, data-register writes, takes and memory. Every clock: `dat`, `attr`, `fill_t`, `req`, `addr`, `line_go`, `line_gen` and the pointers equal. `urgent` against the reference's compare made a clock earlier with the mark + 1. The reference's `deadline` is not compared. Allowed differences: `line_go` one clock later (the two-flip-flop synchroniser), no restart on a `dma_en` change, and pointers not reset (the test loads them before the first line) |
 | `test/layer_fetch`, model | `NL` = 1 and 4, both byte orders, against a model: one layer with `TILES` (retro-z80's KS2 build), more than 3 layers, chunky-only without `PLANAR`, the pointer rules (wrap, stride, repeated line, a write mid-line), and settings changed mid-line (copied ones from the next line, live ones at once) |
 | `test/layer_pix` | Unchanged |
 | The machines' system tests | Each machine's video tests, with the core in place of its `bpldma.v` |
@@ -200,7 +202,7 @@ A fetch takes two clocks: A picks the layer and its register, and reads its poin
 | # | Point |
 |---|-------|
 | F1 | The register-bus side of retro68k's `bpldma.v` (BPLDMA set/clear, byte merging) and retro-z80's (the pointer capture for the CPU) move into each machine's register file. They are not part of this core |
-| F2 | A `dma_en` change restarts a fetch being set up. retro68k restarted it on any write to BPLDMA, even one that changed nothing; the lockstep test allows for that difference |
+| F2 | Closed: retro68k restarted a fetch being set up on any write to BPLDMA, which achieved nothing (the enables are a registered copy, and a group keeps its own word list). The core has no restart for `dma_en`; nothing in retro68k relied on it. The lockstep test allows for the difference |
 | F3 | `sprite_fetch.v` has the same unused deadline output and a combinational urgent; it could get the same treatment |
 | F4 | The deadline's 59 clocks a group assumes about 3.7 system clocks a screen pixel (576p at 100 MHz). A machine with another pixel clock needs it as a parameter |
 | F5 | retro-z80's planned attribute layer (its video spec 7.1) needs no core change: it is a fourth layer (`NL` = 4) set up as 1-bit chunky, one word (two cells) a group, with its own pointer through `ptr_wr`, its own stride, wrap 0, the target layer's `hscale`, `adv` only on a cell row's last line, and its own `ngroups`. Its `fill_t` and `take_t` go to an attribute shifter in place of `layer_pix`. retro-z80 will confirm when it builds it on the KS3 |
