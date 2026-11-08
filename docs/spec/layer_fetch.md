@@ -1,6 +1,6 @@
 # Layer fetch (layer_fetch)
 
-Status: **draft, for review**
+Status: **draft**, reviewed by retro68k and retro-z80 and implemented (`rtl/layer_fetch.v`). To be locked together with `layer_pix` once both machines have adopted it.
 
 The layer fetch reads each layer's words from memory, one 16-pixel group at a time, into the layer's data registers, where `layer_pix.v` takes them. It is one requester on the memory scheduler (`dmac.v`) for all its layers, and picks which layer asks next by earliest deadline. It counts each layer's pointer on as it reads, and moves it to the next line's start at the end of a line.
 
@@ -41,7 +41,7 @@ Settings are read at one of two times, kept as both machines do today:
 | `line_gen` | out | 1 | Toggles with `line_go` | – |
 | `act` | in | NL | The layer shows on the line about to be fetched | Copied at `line_go` |
 | `adv` | in | NL | Its pointers move on to the next source line after this line (else back to this line's start: a repeated line of a vertically scaled layer) | Copied at `line_go` |
-| `depth` | in | 3×NL | Words per group − 1: planes − 1 for a planar layer; for a chunky layer, bits a pixel − 1 as a word count (0, 1, 3 or 7) | Read live, when a group starts and for the urgent count. With `TILES`, a tile layer's depth for storing rows is also copied at `line_go` |
+| `depth` | in | 3×NL | Words per group − 1: planes − 1 for a planar layer; for a chunky layer, bits a pixel − 1 as a word count (0, 1, 3 or 7) | Read live, when a group starts and for the urgent count (with `DATWRITE`, a group start sees it a clock late, through the same register as `dma_en`). With `TILES`, a tile layer's depth for storing rows is also copied at `line_go` |
 | `planar` | in | NL | `PLANAR`: the layer is planar, one pointer per plane | Read live, when a word is picked |
 | `hscale` | in | 2×NL | log2 of the horizontal scale. Sets how long a group lasts (4.4) | Read live, when a group is taken (and for a map entry's deadline) |
 | `wrap` | in | 4×NL | 0: no wrap. n: the layer's pointers wrap within an aligned block of 2^(n+9) bytes | Read live, on every pointer move |
@@ -137,7 +137,7 @@ Each layer has a deadline: system clocks until the group it took last is used up
 
 A word waiting in the holding place has already passed B, so it isn't counted.
 
-`urgent` is a register. In each clock that `req` is high, it is the comparison for that request using the deadline and words left of the clock before. A deadline drops by at most 1 a clock, so `urgent` is at most one clock later than a combinational compare would be; `URG_BASE` is one higher than a combinational mark to allow for it. In its first clock, a new request's `urgent` is worked out for that request, not the one before; that includes a new request put up in the clock after an `ack`, when `req` stays high. It is 0 while `req` is 0.
+`urgent` is a register. In each clock that `req` is high, it is the comparison for that request, with the words left as of this clock and the deadline of the clock before. A deadline drops by at most 1 a clock, so `urgent` is at most one clock later than a combinational compare would be; `URG_BASE` is one higher than a combinational mark to allow for it. In its first clock, a new request's `urgent` is worked out for that request, not the one before; that includes a new request put up in the clock after an `ack`, when `req` stays high. It is 0 while `req` is 0.
 
 ### 4.5 Tile layers (`TILES`)
 
@@ -175,7 +175,20 @@ Up to four reads can be on their way. Each carries the layer, the register (or e
 
 A fetch takes two clocks: A picks the layer and its register, and reads its pointer and saved start; B works out the address and the pointer's next value, writes it, moves the group counts on, and puts up the request (or holds it in a one-entry holding place while `req` waits for its `ack`, so the next request is ready when the scheduler takes this one). Memory cycles are two clocks apart, so this costs no bandwidth. A doesn't start in a clock with `line_go` or a `ptr_wr`. B waits while the holding place is full and `req` has not been taken, and a group start in B waits until the layer still has groups left. `line_go` or a `ptr_wr` in B sends it back to A, whichever layer it concerns.
 
-### 4.9 Reset
+### 4.9 Size
+
+Yosys 0.33, `synth_xilinx` for 7-series, the core alone with the machine's build, beside the machine's own `bpldma.v`:
+
+| Build | LUTs | Flip-flops | LUT RAM |
+|-------|------|------------|---------|
+| retro68k's (`PLANAR`, `DATWRITE`, PW 23) | 1840 | 885 | 13 |
+| retro68k's `bpldma.v` | 1753 | 870 | 12 |
+| retro-z80's (`TILES`, `LITTLE`) | 1820 | 1344 | 13 |
+| retro-z80's `bpldma.v` | 2123 | 1754 | 1 |
+
+Most of the flip-flops are the 384 data registers. The core is a little larger than retro68k's fetch (the generic widths, the second synchroniser flop, the registered `urgent`) and smaller than retro-z80's, whose bus registers and pointer capture are now the machine's, and whose pointers were flip-flops where the core uses LUT RAM. The machines' Vivado builds are the ones that count.
+
+### 4.10 Reset
 
 `rst` clears every count, deadline and toggle, the data registers and the request, and sets the round-robin's last layer served to NL − 1. It does **not** clear the pointers or their saved starts (retro68k keeps them in LUT RAM; clearing them would cost about 1,100 flip-flops in a planar build), nor the synchronisers. Software loads the pointers before use. Nothing is fetched until a line starts.
 
@@ -192,8 +205,8 @@ A fetch takes two clocks: A picks the layer and its register, and reads its poin
 
 | Test | What it checks |
 |------|----------------|
-| `test/layer_fetch`, lockstep | The new core beside copies of retro68k's and retro-z80's `bpldma.v` (in the test folder only), each built to match (retro68k: `PLANAR`, `DATWRITE`, PW 23; retro-z80: `TILES`, `LITTLE`), on the same random settings, pointer writes, data-register writes, takes and memory. Every clock: `dat`, `attr`, `fill_t`, `req`, `addr`, `line_go`, `line_gen` and the pointers equal. `urgent` against the reference's compare made a clock earlier with the mark + 1. The reference's `deadline` is not compared. Allowed differences: `line_go` one clock later (the two-flip-flop synchroniser), no restart on a `dma_en` change, and pointers not reset (the test loads them before the first line) |
-| `test/layer_fetch`, model | `NL` = 1 and 4, both byte orders, against a model: one layer with `TILES` (retro-z80's KS2 build), more than 3 layers, chunky-only without `PLANAR`, the pointer rules (wrap, stride, repeated line, a write mid-line), and settings changed mid-line (copied ones from the next line, live ones at once) |
+| `test/layer_fetch`, `tb_lock68k` and `tb_lockz80` | The core beside frozen copies of retro68k's and retro-z80's `bpldma.v` (`ref/`), each built to match (retro68k: `PLANAR`, `DATWRITE`, PW 23; retro-z80: `TILES`, `LITTLE`), on the same random settings, register writes, takes and a memory that is busy or quiet by spells, for 600,000 clocks each. Every clock: `dat`, `attr`, `fill_t`, `req`, `addr`, `line_go`, `line_gen` and every pointer equal. `urgent` against the reference's compare with the words left now, the deadline of the clock before and the mark + 1. The reference's `deadline` is not compared. Allowed for: `line_t` reaches the reference a clock later (the core has one more synchroniser flop); retro68k's BPLDMA writes are made only in `line_go` clocks (it restarted a fetch on them, the core does not); pointers are loaded before the first line. The register-file side of each machine is modelled in the test bench |
+| `test/layer_fetch`, `tb_model` | Builds the machines don't have, against a model of the data path and the pointer rules: one tile layer, little-endian (retro-z80's KS2 shape); four chunky layers; two layers with `PLANAR`, little-endian. Memory is a hash of the address, so every group's words follow from the pointer rules: each group that fills is checked word by word (tiles: the rows the entries pick, and `attr`), and at each line start every pointer is checked against start + stride (or the start) within the wrap block. A stride written just after the line start applies at its end; `ngroups` and `act` changed mid-line leave the line alone |
 | `test/layer_pix` | Unchanged |
 | The machines' system tests | Each machine's video tests, with the core in place of its `bpldma.v` |
 

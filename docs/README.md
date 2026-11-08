@@ -22,7 +22,7 @@ Each machine documents its own instantiation: the registers that drive a core, t
 | Memory-cycle scheduler (generic: N requesters, S slots) | `rtl/dmac.v` | [spec/dmac.md](spec/dmac.md) | [guide/dmac.md](guide/dmac.md) |
 | Time base | `rtl/timebase.v` | [spec/timebase.md](spec/timebase.md) | [guide/timebase.md](guide/timebase.md) |
 | Layer pixel unit | `rtl/layer_pix.v` | [spec/layer_pix.md](spec/layer_pix.md) | [guide/layer_pix.md](guide/layer_pix.md) |
-| Layer fetch | `rtl/layer_fetch.v` (to come) | [spec/layer_fetch.md](spec/layer_fetch.md) | to come |
+| Layer fetch | `rtl/layer_fetch.v` | [spec/layer_fetch.md](spec/layer_fetch.md) | [guide/layer_fetch.md](guide/layer_fetch.md) |
 | Copper engine | `rtl/copper_engine.v` | [spec/copper_engine.md](spec/copper_engine.md) | [guide/copper_engine.md](guide/copper_engine.md) |
 | DMA engine (blitter) | `rtl/dmx_core.v` | [spec/dmx_core.md](spec/dmx_core.md) | [guide/dmx_core.md](guide/dmx_core.md) |
 | Platform parts: HDMI output, DDR output register | `platform/artix7/hdmi_out.v`, `oddr.v`, `lint_stub.v`; `platform/sim/oddr.v` | [spec/platform.md](spec/platform.md) | [guide/platform.md](guide/platform.md) |
