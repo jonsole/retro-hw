@@ -205,11 +205,18 @@ On top of that it gets the spare cycles its place in rule 4 wins. For the plans 
 | A CPU that cannot wait | 20 M/s, never taken | 20 M/s | 10 M/s, less urgent fetches | Spare cycles only |
 | A big blit | Spare cycles only | 20 M/s | 10 M/s, less urgent fetches | DMA engine 10 M/s, less urgent fetches |
 
-**Urgent wait.** An urgent request loses a cycle only to an owner of a locked slot that asks, or to an urgent request from a lower number. Let L be the longest run of locked slots in a row (counting round the end of the plan) in any plan the machine may use, and U the number of urgent requests from lower numbers that can be served ahead of it. From the start of the clock in which the urgent request is first high to the edge at which the requester takes its data:
+**Urgent wait.** An urgent request loses a cycle only to an owner of a locked slot that asks, or to an urgent request from a lower number. Let U be the number of urgent requests from lower numbers that can be served ahead of it. Let W be the longest run of slots in a row (counting round the end of the plan) that holds at most U unlocked slots, in any plan the machine may use: the request can lose every slot in such a run, the locked ones to their owners and the unlocked ones to the lower numbers. From the start of the clock in which the urgent request is first high to the edge at which the requester takes its data:
 
-  worst case = 6 + 2L + 2U clocks
+  worst case = 6 + 2W clocks
 
-That is 1 clock until a decision, 1 for the decision, 2 for each cycle lost, and 4 from the issue to the data. For the numbers of 4.1, the layers have U = 0 and the sprites U = 1 if the layers can be urgent at the same moment. With the first plan of 4.2 (L = 0), that is 6 and 8 clocks; with the second (L = 1), 8 and 10. A requester's urgent mark must be at least this far ahead of its deadline.
+That is 1 clock until a decision, 1 for the decision, 2 for each cycle lost, and 4 from the issue to the data. With U = 0, W is the longest run of locked slots. For the numbers of 4.1, the layers have U = 0 and the sprites U = 1 if the layers can be urgent at the same moment:
+
+| Plan | Layers (U = 0) | Sprites (U = 1) |
+|------|----------------|-----------------|
+| A CPU that can wait (nothing locked) | W = 0: 6 clocks | W = 1: 8 clocks |
+| A CPU that cannot wait (slots 0 and 2 locked) | W = 1: 8 clocks | W = 3 (slots 0, 1, 2): 12 clocks |
+
+A requester's urgent mark must be at least this far ahead of its deadline.
 
 **A locked owner's wait.** At most until its next owned slot, if it is the only owner. Counted from the start of the clock in which the request is first high to the issue edge: with one owned slot in 5, 10 clocks; with slots 0 and 2 of 5 (decided 4 and 6 clocks apart), 6. Read data follows 4 clocks after the issue. It may be sooner, by a spare cycle.
 
