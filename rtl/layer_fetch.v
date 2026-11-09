@@ -359,10 +359,18 @@ module layer_fetch #(
     reg  [9:0]    a_rem_n;
     reg  [2:0]    a_j;
     reg  [PW-1:0] a_pt, a_sv;
-    always @(posedge clk) if (a_go && gstart) begin                // the group takes its settings
-        g_dep[pick] <= rs_dep[pick];
-        g_hs[pick]  <= rs_hs[pick];
-        g_pl[pick]  <= rs_pl[pick];
+    // The settings a group takes as it starts. Each register has one
+    // always block, its reset included: two blocks driving one register
+    // simulate fine but do not synthesise (drivers.sh checks it)
+    always @(posedge clk) begin
+        if (rst) begin
+            g_pl <= {NL{1'b0}};
+            for (n = 0; n < NL; n = n + 1) begin g_dep[n] <= 3'd0;  g_hs[n] <= 2'd0; end
+        end else if (a_go && gstart) begin
+            g_dep[pick] <= rs_dep[pick];
+            g_hs[pick]  <= rs_hs[pick];
+            g_pl[pick]  <= rs_pl[pick];
+        end
     end
     // A catch-up move is a line's last word without a request: B writes
     // the saved start (+ stride) and nothing else
@@ -372,13 +380,12 @@ module layer_fetch #(
         a_cu      <= a_cgo;
         a_sv      <= svm[sv_i];
     end
-    always @(posedge clk) if (a_cgo) begin
+    always @(posedge clk) if (a_cgo) begin                         // a catch-up move (a_go is low)
         a_pick    <= c_lay;
         a_pi      <= c_sel;
         a_first_w <= 1'b0;
         a_last_w  <= 1'b1;
-    end
-    always @(posedge clk) if (a_go) begin
+    end else if (a_go) begin
         a_pick    <= pick;
         a_slot    <= sl_n;
         a_pi      <= pi;
@@ -578,10 +585,9 @@ module layer_fetch #(
             firstg <= {NL{1'b0}};  lastg <= {NL{1'b0}};
             t_tile <= {NL{1'b0}};
             first_take <= {NL{1'b0}};
-            g_pl <= {NL{1'b0}};
             for (n = 0; n < NL; n = n + 1) begin
                 left[n] <= 12'd0;  ngr[n] <= 12'd0;  rem[n] <= 10'd0;  dl[n] <= DL_NONE;
-                at[n]   <= 10'd0;  g_dep[n] <= 3'd0;  g_hs[n] <= 2'd0;
+                at[n]   <= 10'd0;
             end
             for (n = 0; n < 8*NL; n = n + 1) dr[n] <= 16'd0;
         end else begin
