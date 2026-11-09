@@ -73,13 +73,19 @@ module tb_lock68k;
     wire         cu_on   = dut.cu_act || dut.c_v;
     wire [4:0]   cu_q    = dut.cu_q;
     wire [23:0]  cu_ra   = 24'hE00100 + {19'd0, cu_q[4:3]} * 24'h80 + 24'h20 + {21'd0, cu_q[2:0]} * 24'h4;
-    wire         ref_wr    = cu_on ? 1'b1 : rb_wr;
+    // A partial pointer write is merged with the pointer as it is; from the
+    // reference's last word to line_go the two hold different values, so a
+    // partial write lands only while they agree (dropped from both if not).
+    // A whole pointer (a split screen) lands any time.
+    wire         pb_ok     = ptr_be == 3'b111 || dut.pt[ptr_sel] == ref.pt[ptr_sel];
+    wire         ptr_wr_g  = ptr_wr && pb_ok;
+    wire         ref_wr    = cu_on ? 1'b1 : (rb_wr && !(ptr_wr && !pb_ok));
     wire [23:2]  ref_addr  = cu_on ? cu_ra[23:2] : rb_addr;
     wire [31:0]  ref_wdata = cu_on ? {9'd0, ref.pt[cu_q]} : rb_wdata;
     wire [3:0]   ref_be    = cu_on ? 4'b0111 : rb_be;
     integer      n_cu = 0, cp_q = -1;
     always @(posedge clk) begin
-        cp_q = (dut.c2_go && dut.c_el && !dut.wrf[dut.c_q]) ? dut.c_q : -1;
+        cp_q = dut.c2_wr ? dut.c_q : -1;
         if (cp_q >= 0) n_cu = n_cu + 1;
     end
     always @(negedge clk) if (cp_q >= 0) begin ref.pt[cp_q] = dut.pt[cp_q];  ref.svm[cp_q] = dut.pt[cp_q]; end
@@ -105,7 +111,7 @@ module tb_lock68k;
         .act(act), .adv(adv), .depth(planes), .planar(~chunky), .hscale(hscale), .wrap(wrap),
         .stride(stride), .ngroups(ngroups),
         .tile(3'd0), .mapw(6'd0), .ty(30'd0), .tcol(21'd0), .mappt({3*PW{1'b0}}), .patpt({3*PW{1'b0}}),
-        .ptr_sel(ptr_sel), .ptr_wr(ptr_wr), .ptr_wdata(ptr_wdata), .ptr_rdata(ptr_rdata),
+        .ptr_sel(ptr_sel), .ptr_wr(ptr_wr_g), .ptr_wdata(ptr_wdata), .ptr_rdata(ptr_rdata),
         .dat_wr(dat_wr), .dat_sel(dat_sel), .dat_wdata(dat_wdata), .dat_be(dat_be), .dma_en(dma_en),
         .dat_rdata(dat_rdata), .dat(c_dat), .attr(c_attr), .fill_t(c_fill), .take_t(take_t),
         .req(c_req), .urgent(c_urg), .addr(c_addr), .ack(ack), .rvalid(rvalid), .rdata(rdata));

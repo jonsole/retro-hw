@@ -21,11 +21,13 @@
 // Line by line: line_t (from the pixel clock) toggles at the start of each
 // horizontal blank; two clocks later line_go starts the next line's fetch.
 // Each word read moves its pointer on by 2; nothing counts the words. At
-// each line_go the line ends: every pointer the ended line fetched is
-// reset, one a clock, to its line start + stride (or back to the start on a
-// repeated line), which is also the next line's start, before the new
-// line's first group is set up. So how much of a line was fetched never
-// matters to where the next one starts.
+// each line_go the line ends: every pointer read from since its last
+// reset or write is reset, one a clock, to its line start + stride (or back
+// to the start on a repeated line), which is also the next line's start,
+// before the new line's first group is set up. So how much of a line was
+// fetched never matters to where the next one starts, and a pointer
+// written after its last read (a split screen) starts the next line as
+// written.
 //
 // A group's depth, planar flag and scale are taken as it starts (stage A
 // of its first word), from a one-clock register of the settings, and go
@@ -385,29 +387,24 @@ module layer_fetch #(
     wire          b_bsel  = prow[0];
 
     // ---------------------------------------------------------------- line-end reset
-    // From line_go, every pointer there is (cu_q from 0) is looked at in
-    // turn: C1 reads its line start and whether the ended line fetched it,
-    // C2 writes start (+ stride if that line's adv) to the pointer and its
-    // line start. One a clock; a ptr_wr holds C1 and C2 for its clock (the
-    // write port is the machine's), and a pointer written since line_go
-    // keeps the written value (wrf).
-    reg  [NL-1:0] cu_had, cu_adv;               // the ended line: the layer fetched, its adv
+    // uf: a word has been read from the pointer since its last reset or
+    // write. From line_go every pointer there is (cu_q from 0) is looked at
+    // in turn: C1 reads its line start, C2 writes start (+ stride if the
+    // ended line's adv) to the pointer and its line start if its flag is
+    // set, and clears the flag. One a clock; a ptr_wr holds C1 and C2 for
+    // its clock (the write port is the machine's), and clears the written
+    // pointer's flag, so a pointer written after its last read keeps the
+    // written value (a split screen).
+    reg  [NL-1:0] cu_adv;                       // the ended line's adv
     reg  [PIW-1:0] cu_q, c_q;
     reg  [PW-1:0] c_sv;
-    reg           c_el;
-    reg  [NP-1:0] wrf;                          // written since line_go
-    wire [LW-1:0] q_l    = (PLANAR != 0) ? cu_q[PIW-1:PIW-LW] : cu_q[LW-1:0];
-    wire [8*(1<<LW):0] dma_ex = {{(8*((1<<LW)-NL)+1){1'b0}}, dma_en};  // padded past the index range
-    wire [PIW+2:0] cu_qx = {3'd0, cu_q};                            // (wide enough for the plane in any build)
-    wire [2:0]    q_p    = (PLANAR != 0) ? cu_qx[2:0] : 3'd0;
-    wire          q_pl   = (PLANAR != 0) && g_pl[q_l];               // the layer's last group: planar
-    wire          q_el   = cu_had[q_l] && (q_pl ? q_p <= g_dep[q_l] : q_p == 3'd0)
-                           && ((DATWRITE == 0) || dma_ex[{1'b0, q_l, q_pl ? q_p : 3'd0}]);
+    reg  [NP-1:0] uf;                           // used: read since its last reset or write
     wire [LW-1:0] c_l    = (PLANAR != 0) ? c_q[PIW-1:PIW-LW] : c_q[LW-1:0];
     wire [15:0]   c_mod  = stride[16*c_l +: 16];
     wire [PW-1:0] c_next = wadd(c_sv, cu_adv[c_l] ? {{(PW-16){c_mod[15]}}, c_mod[15:1], 1'b0} : {PW{1'b0}},
                                 wmask_of(wrap[4*c_l +: 4]));
     wire          c2_go  = c_v && !ptr_wr;
+    wire          c2_wr  = c2_go && uf[c_q];
     wire          c1_go  = cu_act && !ptr_wr && (!c_v || c2_go);
     wire          cu_last = ({{(32-PIW){1'b0}}, cu_q} == NPV - 32'd1);   // the last pointer there is
 
@@ -415,24 +412,24 @@ module layer_fetch #(
         if (c1_go) begin
             c_q  <= cu_q;
             c_sv <= svm[cu_q];
-            c_el <= q_el;
         end
         if (rst) begin
-            cu_act <= 1'b0;  c_v <= 1'b0;  wrf <= {NP{1'b0}};  cu_q <= {PIW{1'b0}};
-            cu_had <= {NL{1'b0}};  cu_adv <= {NL{1'b0}};
-        end else if (line_go) begin
-            cu_act <= 1'b1;  c_v <= 1'b0;  cu_q <= {PIW{1'b0}};
-            wrf    <= ptr_wr ? {{(NP-1){1'b0}}, 1'b1} << wi : {NP{1'b0}};
-            for (n = 0; n < NL; n = n + 1) cu_had[n] <= (ngr[n] != 12'd0) && !t_tile[n];
-            cu_adv <= pv_adv;                                       // the ended line's
+            cu_act <= 1'b0;  c_v <= 1'b0;  uf <= {NP{1'b0}};  cu_q <= {PIW{1'b0}};  cu_adv <= {NL{1'b0}};
         end else begin
-            if (ptr_wr) wrf[wi] <= 1'b1;
-            if (c1_go) begin
-                if (cu_last) cu_act <= 1'b0;
-                else         cu_q   <= cu_q + 1'b1;
+            if (line_go) begin
+                cu_act <= 1'b1;  c_v <= 1'b0;  cu_q <= {PIW{1'b0}};
+                cu_adv <= pv_adv;                                   // the ended line's
+            end else begin
+                if (c1_go) begin
+                    if (cu_last) cu_act <= 1'b0;
+                    else         cu_q   <= cu_q + 1'b1;
+                end
+                if (c1_go)      c_v <= 1'b1;
+                else if (c2_go) c_v <= 1'b0;
             end
-            if (c1_go)      c_v <= 1'b1;
-            else if (c2_go) c_v <= 1'b0;
+            if (b_go && !a_tile) uf[a_pi] <= 1'b1;                  // a word read (never in a line_go clock)
+            if (c2_wr)           uf[c_q]  <= 1'b0;                  // reset
+            if (ptr_wr)          uf[wi]   <= 1'b0;                  // written
         end
     end
 
@@ -442,7 +439,7 @@ module layer_fetch #(
         if (ptr_wr) begin
             pt[wi]  <= {ptr_wdata[PW-1:1], 1'b0};
             svm[wi] <= {ptr_wdata[PW-1:1], 1'b0};
-        end else if (c2_go && c_el && !wrf[c_q]) begin
+        end else if (c2_wr) begin
             pt[c_q]  <= c_next;
             svm[c_q] <= c_next;
         end else if (b_go && !a_tile) begin

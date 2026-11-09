@@ -8,10 +8,14 @@
 //     model's pointers, laid into the data registers as the spec says, and
 //     for a tile layer the rows the map entries pick (and attr);
 //   - at each line start, once the core's line-end resets are made, every
-//     pointer the ended line fetched must be at its line start + stride if
-//     adv, else back at its line start, within the wrap block, whether the
-//     line was fetched to its end or not (revision 4): the stride is the one
-//     of the clock its reset is made in; every other pointer must not move;
+//     pointer read from since its last reset or write must be at its line
+//     start + stride if adv, else back at its line start, within the wrap
+//     block, whether the line was fetched to its end or not (revision 4):
+//     the stride is the one of the clock its reset is made in; every other
+//     pointer must not have moved;
+//   - a pointer written after the layer's last fetch on a line (a split
+//     screen) starts the next line as written; one written mid-fetch, with
+//     words still to read, starts it at the written value + stride;
 //   - lines are made short on purpose: a layer whose groups stop being
 //     taken (as when a scale made wider mid-line leaves groups owed), a
 //     memory that stops answering for the rest of a line, and (DATWRITE)
@@ -124,7 +128,12 @@ module tb_model;
     reg          e_pend = 0, e_seen = 0;
     integer      smode = 0;              // the line's way of ending short: 0 none, 1 stop taking, 2 starve, 3 dma_en
     reg          cx_v = 0;               // a pointer written just after line_go: it keeps the written value
-    integer      cx_m, mi, el, pl_ok;
+    integer      cx_m, mi;
+    reg [1:0]    m_rd    [0:8*NL-1];     // read since its last reset or write: 0 no, 1 yes, 2 maybe
+    reg          mw_req = 0;             // a mid-fetch write to make (layer mw_l)
+    integer      mw_l = 0;
+    reg [NL-1:0] mwchk = 0;              // written mid-fetch: data not checked for the rest of the line
+    reg [PW-1:0] wv;
     reg [PW-1:0] cx_val;
     reg          en_keep = 0;            // dma_en stays cleared through the line start (a planar plane)
     reg [NL-1:0] nochk_next = 0;
@@ -243,7 +252,7 @@ module tb_model;
     // ---------------------------------------------------------------- stimulus
     integer   cyc = 0, line = 0, lines_left = 0, line_len = 0, ptr_ld = 0, p;
     integer   errors = 0, n_groups = 0, n_tiles = 0, n_ptr_checks = 0, n_stride_mid = 0, n_unfinished = 0;
-    integer   n_caught = 0, n_cancel = 0, n_stop = 0, n_starve = 0, n_enclr = 0, n_enkeep = 0, n_left = 0, q;
+    integer   n_caught = 0, n_cancel = 0, n_stop = 0, n_starve = 0, n_enclr = 0, n_enkeep = 0, n_split = 0, n_mid = 0, q;
     integer   n_set_mid = 0, n_set_new = 0, set_at = 0, set_layer = 0;
     reg       first_line = 1;
     reg [31:0] r;
@@ -276,30 +285,24 @@ module tb_model;
                 end
             end else if (e_pend && e_seen && (dut.cu_act || dut.c_v)) begin
                 // A reset may be made in this clock: the stride of now
-                if (dut.c2_go) e_cstr[(PLANAR != 0) ? dut.c_q : 8*dut.c_q] = stride[16*((PLANAR != 0) ? dut.c_q / 8 : dut.c_q) +: 16];
+                if (dut.c2_wr) e_cstr[(PLANAR != 0) ? dut.c_q : 8*dut.c_q] = stride[16*((PLANAR != 0) ? dut.c_q / 8 : dut.c_q) +: 16];
             end else if (e_pend && e_seen) begin
                 e_pend = 1'b0;
                 for (n = 0; n < NL; n = n + 1)
                     for (w = 0; w < ((PLANAR != 0) ? 8 : 1); w = w + 1) begin
                         mi = 8*n + w;
                         q  = (PLANAR != 0) ? mi : n;
-                        // Fetched on the ended line: the layer had groups, the
-                        // plane is within its last group's depth (the core's
-                        // g_dep; the groups' gset are checked against the
-                        // model), and its dma_en bit is on now
-                        pl_ok = ((PLANAR != 0) && dut.g_pl[n]) ? (w <= dut.g_dep[n]) : (w == 0);
-                        el = e_used[n] && pl_ok && ((DATWRITE == 0) || dma_en[8*n + (((PLANAR != 0) && dut.g_pl[n]) ? w : 0)]);
+                        // Read since its last reset or write: reset to its line
+                        // start + stride; else unmoved (its line start, or the
+                        // value written); maybe read: either
+                        wv = wrapadd(m_sv[mi], e_adv[n] ? {{(PW-16){e_cstr[mi][15]}}, e_cstr[mi][15:1], 1'b0} : {PW{1'b0}},
+                                     wrap[4*n +: 4]);
                         if (cx_v && cx_m == mi) begin
                             m_pt[mi] = cx_val;  m_sv[mi] = cx_val;  n_cancel = n_cancel + 1;
-                        end else if (el) begin
-                            m_pt[mi] = wrapadd(m_sv[mi], e_adv[n] ? {{(PW-16){e_cstr[mi][15]}}, e_cstr[mi][15:1], 1'b0} : {PW{1'b0}},
-                                               wrap[4*n +: 4]);
-                            m_sv[mi] = m_pt[mi];
-                            n_caught = n_caught + 1;
-                        end else begin
-                            m_pt[mi] = e_gopt[mi];                       // left alone
-                            if (e_used[n] && pl_ok) n_left = n_left + 1;  // ... its dma_en bit off
+                        end else if (m_rd[mi] == 2'd1 || (m_rd[mi] == 2'd2 && dut.pt[q] === wv)) begin
+                            m_pt[mi] = wv;  m_sv[mi] = wv;  n_caught = n_caught + 1;
                         end
+                        m_rd[mi] = 2'd0;
                         if (dut.pt[q] !== m_pt[mi]) fail("pointer", n, dut.pt[q], m_pt[mi]);
                         m_run[mi] = m_pt[mi];
                         n_ptr_checks = n_ptr_checks + 1;
@@ -318,6 +321,7 @@ module tb_model;
                     ptr_wdata <= (p * 22'h4C8C + 22'h2000) & 22'h3FFFFE;
                     m_pt[(PLANAR != 0) ? p : 8*p] = (p * 22'h4C8C + 22'h2000) & 22'h3FFFFE;
                     m_sv[(PLANAR != 0) ? p : 8*p] = (p * 22'h4C8C + 22'h2000) & 22'h3FFFFE;
+                    m_rd[(PLANAR != 0) ? p : 8*p] = 2'd0;
                 end
             end else if (lines_left == 0) begin
                 // The line ends: checked once the core's resets are done (above)
@@ -326,10 +330,15 @@ module tb_model;
                         e_adv[n]  = m_adv[n];
                         e_used[n] = enable && m_act[n] && m_ngr[n] != 0 && !m_tile[n];
                         if (m_grp[n] < m_ngr[n] && m_act[n] && !m_tile[n]) n_unfinished = n_unfinished + 1;
+                        // A layer with groups whose words may have been read
+                        // without a group being taken: its planes maybe read
+                        if (e_used[n] && m_grp[n] < m_ngr[n])
+                            for (w = 0; w < ((PLANAR != 0) && m_planar[n] ? m_depth[n] + 1 : 1); w = w + 1)
+                                if (m_rd[8*n + w] == 2'd0) m_rd[8*n + w] = 2'd2;
                     end
                 e_pend = !first_line;  e_seen = 1'b0;  cx_v = 1'b0;
                 first_line <= 1'b0;
-                starve <= 1'b0;  nochk <= nochk_next;  nochk_next = {NL{1'b0}};
+                starve <= 1'b0;  nochk <= nochk_next;  nochk_next = {NL{1'b0}};  mwchk <= {NL{1'b0}};
                 if (!en_keep) dma_en <= {8*NL{1'b1}};
                 // The next line's settings, in place before its line_go
                 line_t <= ~line_t;
@@ -413,6 +422,26 @@ module tb_model;
                 if (lines_left == 250) begin
                     n = {$random} % NL;  ngroups[12*n +: 12] <= 12'd40;  act[n] <= ~act[n];
                 end
+                // A split screen: a pointer written after the layer's last
+                // fetch on the line starts the next line as written
+                if (lines_left == 60 && {$random} % 2 == 0) begin
+                    n = {$random} % NL;
+                    if (m_act[n] && !m_tile[n] && m_ngr[n] != 0 && m_grp[n] == m_ngr[n] && !nochk[n] && !mwchk[n]) begin
+                        w  = ((PLANAR != 0) && m_planar[n]) ? {$random} % (m_depth[n] + 1) : 0;
+                        wv = {$random} & {{(PW-1){1'b1}}, 1'b0};
+                        ptr_wr <= 1'b1;  ptr_sel <= (PLANAR != 0) ? 8*n + w : n << 3;  ptr_wdata <= wv;
+                        m_pt[8*n + w] = wv;  m_sv[8*n + w] = wv;  m_rd[8*n + w] = 2'd0;  n_split = n_split + 1;
+                    end
+                end
+                // Mid-fetch: written with groups still to fetch, then read on
+                if (mw_req) begin
+                    mw_req = 1'b0;  n = mw_l;
+                    w  = ((PLANAR != 0) && m_planar[n]) ? {$random} % (m_depth[n] + 1) : 0;
+                    wv = {$random} & {{(PW-1){1'b1}}, 1'b0};
+                    ptr_wr <= 1'b1;  ptr_sel <= (PLANAR != 0) ? 8*n + w : n << 3;  ptr_wdata <= wv;
+                    m_pt[8*n + w] = wv;  m_sv[8*n + w] = wv;  m_rd[8*n + w] = 2'd0;  n_mid = n_mid + 1;
+                    mwchk[n] <= 1'b1;
+                end
             end
         end
     end
@@ -423,7 +452,10 @@ module tb_model;
         for (t = 0; t < NL; t = t + 1)
             if (fill_t[t] != take_t[t] && !(t == stop_l && m_grp[t] != 0)) begin
                 take_t[t] <= ~take_t[t];
-                if (nochk[t]) m_grp[t] = m_grp[t] + 1;        // dma_en cleared: not checked
+                // The group's planes were read (maybe, for one whose dma_en was cleared)
+                for (j = 0; j < (((PLANAR != 0) && m_planar[t]) ? m_depth[t] + 1 : 1); j = j + 1)
+                    if (!m_tile[t]) m_rd[8*t + j] = nochk[t] ? ((m_rd[8*t + j] == 2'd1) ? 2'd1 : 2'd2) : 2'd1;
+                if (nochk[t] || mwchk[t]) m_grp[t] = m_grp[t] + 1;   // dma_en cleared, or written mid-fetch: not checked
                 else if (m_grp[t] < m_ngr[t] && m_act[t]) begin
                     // The group's settings: the line's, or the mid-line ones
                     // from some group on, and the planar flag as set
@@ -435,6 +467,9 @@ module tb_model;
                     end else fail("gset", t, {122'd0, gset[6*t +: 6]}, {122'd0, m_hs2[t], m_dep2[t], 1'b0});
                     expect_group(t);
                     n_groups = n_groups + 1;
+                    if (m_grp[t] == 1 && m_ngr[t] >= 3 && smode == 0 && !m_tile[t] && !mw_req && {$random} % 3 == 0) begin
+                        mw_req = 1'b1;  mw_l = t;                        // write it next clock, groups still to come
+                    end
                     if (m_tile[t]) n_tiles = n_tiles + 1;
                     for (j = 0; j < 8; j = j + 1) if (!exp_used[j]) exp_dat[16*j +: 16] = dat[128*t + 16*j +: 16];
                     if (dat[128*t +: 128] !== exp_dat) fail("group", t, dat[128*t +: 128], exp_dat);
@@ -450,10 +485,10 @@ module tb_model;
         @(negedge clk);
         $display("NL=%0d PLANAR=%0d TILES=%0d LITTLE=%0d DATWRITE=%0d: %0d lines, %0d groups checked (%0d tile), %0d pointer checks, %0d mid-line strides, %0d mid-line settings (%0d reached a group)",
                  NL, PLANAR, TILES, LITTLE, DATWRITE, line, n_groups, n_tiles, n_ptr_checks, n_stride_mid, n_set_mid, n_set_new);
-        $display("  short lines: %0d layer-lines unfinished (%0d stopped taking, %0d starved, %0d dma_en cleared, %0d kept cleared); %0d resets checked, %0d planes left alone, %0d pointers written after line_go",
-                 n_unfinished, n_stop, n_starve, n_enclr, n_enkeep, n_caught, n_left, n_cancel);
+        $display("  short lines: %0d layer-lines unfinished (%0d stopped taking, %0d starved, %0d dma_en cleared, %0d kept cleared); %0d resets checked; pointers written: %0d after the last fetch, %0d mid-fetch, %0d after line_go",
+                 n_unfinished, n_stop, n_starve, n_enclr, n_enkeep, n_caught, n_split, n_mid, n_cancel);
         if (n_groups < 200 || n_ptr_checks < 50 || ((TILES != 0) && n_tiles == 0) || n_set_new < 10
-            || n_caught < 50 || n_cancel < 10 || ((DATWRITE != 0) && (n_enclr < 5 || n_left < 2))) begin
+            || n_caught < 50 || n_cancel < 10 || n_split < 10 || n_mid < 5 || ((DATWRITE != 0) && n_enclr < 5)) begin
             errors = errors + 1;
             $display("ERROR: a case never came up, or too many lines ran out");
         end
