@@ -24,6 +24,12 @@
 // on a line saves the pointer (the line's start); the last sets it to that
 // start + stride, or back to the start on a repeated line.
 //
+// A pointer that gave its first word on a line but not its last (a scale
+// made wider mid-line, a starved fetch, dma_en cleared) owes its line-end
+// move: at line_go the owed pointers are moved, one a clock, to their saved
+// start (+ stride if that line's adv) before the new line's first group is
+// set up. Judged per pointer, so a plane that gave no word is left alone.
+//
 // A group's depth, planar flag and scale are taken as it starts (stage A
 // of its first word), from a one-clock register of the settings, and go
 // out with it in gset for layer_pix: a setting the machine changes applies
@@ -338,7 +344,8 @@ module layer_fetch #(
 
     // ---------------------------------------------------------------- A: start a fetch
     reg           phase;                        // 0: A, 1: B
-    wire          a_go = !rst && !phase && !line_go && !ptr_wr && |want && gmask != 10'd0;
+    wire          cu_busy;                      // catch-up moves still to make (below)
+    wire          a_go = !rst && !phase && !line_go && !ptr_wr && !cu_busy && |want && gmask != 10'd0;
     reg  [LW-1:0] a_pick;
     reg  [3:0]    a_slot;
     reg  [PIW-1:0] a_pi;
@@ -387,12 +394,65 @@ module layer_fetch #(
     wire [PW-1:0] b_addr  = !a_tile ? a_pt : a_ent ? eaddr[a_pick] : prow + {{(PW-4){1'b0}}, a_j, 1'b0};
     wire          b_bsel  = prow[0];
 
+    // ---------------------------------------------------------------- catch-up
+    // owe: the pointer gave its first word on this line and not yet its last.
+    // At line_go the owed ones go to cu_m, with the line's adv, and are moved
+    // in two steps: C1 picks the lowest and reads its saved start, C2 writes
+    // start (+ stride) within the wrap block. A ptr_wr cancels a pointer's
+    // move and holds C1 and C2 for its clock (the write port is the machine's).
+    reg  [NP-1:0] owe, cu_m;
+    reg  [NL-1:0] cu_adv;
+    reg           c_v;
+    reg  [PIW-1:0] c_q;
+    reg  [PW-1:0] c_sv;
+    reg  [PIW-1:0] c_sel;
+    always @(*) begin : lowest
+        integer q;
+        c_sel = {PIW{1'b0}};
+        for (q = NP - 1; q >= 0; q = q - 1) if (cu_m[q]) c_sel = q[PIW-1:0];
+    end
+    assign cu_busy = (cu_m != {NP{1'b0}}) || c_v;
+    wire [LW-1:0] c_l    = (PLANAR != 0) ? c_q[PIW-1:PIW-LW] : c_q[LW-1:0];
+    wire [15:0]   c_mod  = stride[16*c_l +: 16];
+    wire [PW-1:0] c_str  = cu_adv[c_l] ? {{(PW-16){c_mod[15]}}, c_mod[15:1], 1'b0} : {PW{1'b0}};
+    wire [PW-1:0] c_next = wadd(c_sv, c_str, wmask_of(wrap[4*c_l +: 4]));
+    wire          c2_go  = c_v && !ptr_wr;
+    wire          c1_go  = !rst && !line_go && !ptr_wr && (cu_m != {NP{1'b0}}) && (!c_v || c2_go);
+
+    always @(posedge clk) begin
+        if (c1_go) begin
+            c_q  <= c_sel;
+            c_sv <= svm[c_sel];
+        end
+        if (rst) begin
+            owe <= {NP{1'b0}};  cu_m <= {NP{1'b0}};  c_v <= 1'b0;  cu_adv <= {NL{1'b0}};
+        end else begin
+            if (line_go) begin
+                cu_m   <= owe & ~(ptr_wr ? {{(NP-1){1'b0}}, 1'b1} << wi : {NP{1'b0}});
+                owe    <= {NP{1'b0}};
+                cu_adv <= pv_adv;                                   // the old line's
+            end else begin
+                if (b_go && !a_tile) begin
+                    if (a_last_w)       owe[a_pi] <= 1'b0;
+                    else if (a_first_w) owe[a_pi] <= 1'b1;
+                end
+                if (ptr_wr) begin owe[wi] <= 1'b0;  cu_m[wi] <= 1'b0; end
+                if (c1_go)  cu_m[c_sel] <= 1'b0;
+            end
+            if (c1_go)                       c_v <= 1'b1;
+            else if (c2_go)                  c_v <= 1'b0;
+            if (c_v && ptr_wr && wi == c_q)  c_v <= 1'b0;           // written: the move is dropped
+        end
+    end
+
     // The pointer: a write from the machine wins over the fetch's own move
     // and sets the saved start too. A tile layer leaves its pointer alone.
     always @(posedge clk) begin
         if (ptr_wr) begin
             pt[wi]  <= {ptr_wdata[PW-1:1], 1'b0};
             svm[wi] <= {ptr_wdata[PW-1:1], 1'b0};
+        end else if (c2_go) begin
+            pt[c_q] <= c_next;
         end else if (b_go && !a_tile) begin
             pt[a_pi] <= pt_next;
             if (a_first_w) svm[a_pi] <= a_pt;
