@@ -7,9 +7,10 @@ The core has no bus registers. The machine keeps its own register file and drive
 ## What you need
 
 - `dmac.v`: one requester for the fetch (`req`, `urgent`, `addr`, `ack`, and that requester's `rvalid_o` bit), with `rdata` from `sram_ctl.v`.
-- `layer_pix.v`, one a layer: `dat`, `attr` and `fill_t` to it, `take_t` back.
+- `layer_pix.v`, one a layer: `dat`, `attr`, `gset` and `fill_t` to it, `take_t` back.
 - A beam that toggles `line_t` at the start of each horizontal blank (pixel clock; the core synchronises it).
 - The line settings, worked out for the next line before `line_go`: `act`, `adv`, `ngroups`, and for tiles the map row and column.
+- The layer settings `depth`, `planar` and `hscale`, straight from the register file: the core takes them at each group's start and passes them on to `layer_pix` with the group.
 - A register file with the pointers' addresses, stride, wrap, the tile pointers and the rest.
 
 ## Choosing the build
@@ -34,6 +35,7 @@ Three chunky layers, no tiles, no writes to the data registers, a fixed plan on 
 wire        lf_go, lf_gen, lf_req, lf_urg;
 wire [20:0] lf_addr;
 wire [383:0] lf_dat;
+wire [17:0]  lf_gset;
 wire [2:0]  lf_fill, lf_take;
 
 layer_fetch #(.NL(3), .PW(22), .PLANAR(0), .TILES(0), .DATWRITE(0), .LITTLE(1),
@@ -45,13 +47,13 @@ layer_fetch #(.NL(3), .PW(22), .PLANAR(0), .TILES(0), .DATWRITE(0), .LITTLE(1),
     .tile(3'd0), .mapw(6'd0), .ty(30'd0), .tcol(21'd0), .mappt(66'd0), .patpt(66'd0),
     .ptr_sel({ptr_layer, 3'd0}), .ptr_wr(ptr_wr), .ptr_wdata(ptr_wdata), .ptr_rdata(ptr_rdata),
     .dat_wr(1'b0), .dat_sel(5'd0), .dat_wdata(16'd0), .dat_be(2'd0), .dma_en(24'hFFFFFF), .dat_rdata(),
-    .dat(lf_dat), .attr(), .fill_t(lf_fill), .take_t(lf_take),
+    .dat(lf_dat), .attr(), .gset(lf_gset), .fill_t(lf_fill), .take_t(lf_take),
     .req(lf_req), .urgent(lf_urg), .addr(lf_addr), .ack(sched_ack[FETCH]), .rvalid(sched_rvalid[FETCH]),
     .rdata(mem_rdata)
 );
 ```
 
-`depth` is words a group − 1: 0, 1, 3 or 7 for chunky 1, 2, 4 or 8 bits a pixel (planes − 1 for a planar layer). A read-only requester on the scheduler: tie its `we`, `wdata` and `be` to 0 there.
+`depth` is words a group − 1: 0, 1, 3 or 7 for chunky 1, 2, 4 or 8 bits a pixel (planes − 1 for a planar layer). `lf_gset[6n +: 6]` goes to layer n's `layer_pix` as its `gset`. A read-only requester on the scheduler: tie its `we`, `wdata` and `be` to 0 there.
 
 ## The register file
 
@@ -76,7 +78,7 @@ assign ptr_wdata = {be[2] ? bus_wdata[21:16] : ptr_rdata[21:16],
  line_t        toggles ─┐
  line_go                └─ 2 clocks later, one clock high: settings copied, fetch starts
  req                       ... words of each layer's first group, nearest deadline first ...
- fill_t[n]                 toggles when layer n's group is complete
+ fill_t[n]                 toggles when layer n's group is complete; gset[n] is the group's settings
  take_t[n]                 layer_pix takes it (ahead of the window), the next group starts
 ```
 
@@ -92,7 +94,8 @@ A request is urgent when its layer's deadline is under `URG_BASE` + `URG_WORD` �
 
 - **Load the pointers before use.** Reset leaves them as they are.
 - **Settings copied at the line start must be ready before `line_go`,** two clocks after `line_t` toggles. Work them out in the blank.
-- **Live settings change at once.** A stride written mid-line applies at that line's end (if the line's last word hasn't been set up yet); wrap on the next pointer move; depth and scale at the next group. That is deliberate, for copper effects. Software must keep a layer's depth and scale consistent with what `layer_pix` is showing.
+- **Live settings change at once.** A stride written mid-line applies at that line's end (if the line's last word hasn't been set up yet); wrap on the next pointer move. That is deliberate, for copper effects.
+- **Depth, planar and scale belong to the group.** A write applies from the layer's next group start, and travels to `layer_pix` in `gset`, so the two sides always agree about a group. The fetch works a group ahead: the change shows one or two groups (16–32 source pixels) past where the beam was. A scale change mid-line also changes how many groups the window needs, and `ngroups` was fixed at the line start: the line ends with groups unshown, or runs out early (`layer_pix` spec 4.3).
 - **A starved line leaves the pointer where it stopped,** with no stride applied. Give the display enough owned slots.
 - **Tile patterns are chunky.** `PLANAR` and `TILES` are not built together.
 - **`LITTLE` swaps data words, not map entries.** An entry is the word as read.

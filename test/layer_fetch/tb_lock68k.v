@@ -7,7 +7,8 @@
 // (spec 4.4). Allowed differences (spec 6): line_t reaches the reference
 // a clock later, as the core has one more synchroniser flop; the core has
 // no restart on a BPLDMA write, so those are made only in line_go clocks;
-// pointers are loaded before the first line.
+// pointers are loaded before the first line; depth, planar and scale
+// change only in the line's first clock (the core takes them per group).
 //
 // The register-file side of retro68k's bpldma (byte merging, BPLDMA's
 // set/clear, BPLSTRIDE) is modelled here, as the machine's wrapper would.
@@ -194,23 +195,27 @@ module tb_lock68k;
                 // A new line: toggle line_t, and new settings for it. Depth
                 // and planar change only here (spec 6: the reference
                 // registers its enables a clock later than the core)
-                line_t_c   <= ~line_t_c;                       // (the first line waits for the pointer loads above)
+                line_t_c   <= ~line_t_c;                       
                 lines_left <= 300 + ({$random} % 700);
                 line       <= line + 1;
-                for (j = 0; j < 3; j = j + 1) begin
-                    act[j]      <= (r[2*j +: 2] != 2'd0);
-                    adv[j]      <= r[6+j];
-                    chunky[j]   <= r[9+j];
-                    planes[3*j +: 3] <= r[9+j] ? (r[12+2*j +: 2] == 2'd0 ? 3'd0 : r[12+2*j +: 2] == 2'd1 ? 3'd1 :
-                                                  r[12+2*j +: 2] == 2'd2 ? 3'd3 : 3'd7)
-                                               : {$random} % 8;
-                    hscale[2*j +: 2] <= (r[18+j]) ? 2'd0 : {$random} % 4;
-                    ngroups[12*j +: 12] <= r[21+j] ? 12'd0 : 12'd1 + ({$random} % 40);
-                end
             end else begin
+                if (dma_pending) begin
+                    // The line's settings, in the line_go clock: the core takes
+                    // depth, planar and scale per group (revision 2), the
+                    // reference per line or live, so they change only here
+                    for (j = 0; j < 3; j = j + 1) begin
+                        act[j]      <= (r[2*j +: 2] != 2'd0);
+                        adv[j]      <= r[6+j];
+                        chunky[j]   <= r[9+j];
+                        planes[3*j +: 3] <= r[9+j] ? (r[12+2*j +: 2] == 2'd0 ? 3'd0 : r[12+2*j +: 2] == 2'd1 ? 3'd1 :
+                                                      r[12+2*j +: 2] == 2'd2 ? 3'd3 : 3'd7)
+                                                   : {$random} % 8;
+                        hscale[2*j +: 2] <= (r[18+j]) ? 2'd0 : {$random} % 4;
+                        ngroups[12*j +: 12] <= r[21+j] ? 12'd0 : 12'd1 + ({$random} % 40);
+                    end
+                end
                 lines_left <= lines_left - 1;
                 // Sometimes a live setting changes mid-line
-                if (r[7:0] == 8'd1) begin j = {$random} % 3; hscale[2*j +: 2] <= {$random} % 4; end
                 if (r[7:0] == 8'd2) begin j = {$random} % 3; wrap[4*j +: 4] <= ({$random} % 2) ? 4'd0 : 4'd1 + ({$random} % 6); end
                 if (r[7:0] == 8'd3) begin j = {$random} % 3; act[j] <= ~act[j]; end
                 if (r[7:0] == 8'd4) begin j = {$random} % 3; ngroups[12*j +: 12] <= 12'd1 + ({$random} % 40); end

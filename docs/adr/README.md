@@ -39,9 +39,10 @@ From the layers grilling and the machines' reviews of the spec, 8 November 2026 
 | [0001](layer_fetch/0001-one-core-no-registers.md) | One layer fetch core, with no bus registers | accepted |
 | [0002](layer_fetch/0002-one-requester-nearest-deadline.md) | One scheduler requester for all layers, nearest deadline first inside | accepted |
 | [0003](layer_fetch/0003-registered-urgent-no-deadline.md) | `urgent` is registered; there is no `deadline` output | accepted |
-| [0004](layer_fetch/0004-live-settings.md) | Depth, scale, wrap and stride are read live, on purpose | accepted |
+| [0004](layer_fetch/0004-live-settings.md) | Depth, scale, wrap and stride are read live, on purpose | superseded by 0007 for depth, planar and scale |
 | [0005](layer_fetch/0005-pointers-not-reset.md) | Reset leaves the pointers and their saved starts alone | accepted |
 | [0006](layer_fetch/0006-no-restart-on-enable-change.md) | A fetch-enable change does not restart a fetch | accepted |
+| [0007](layer_fetch/0007-settings-per-group.md) | Depth, planar and scale travel with the group | accepted |
 
 ## Sprite fetch (`sprite_fetch/`)
 

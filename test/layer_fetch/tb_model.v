@@ -11,7 +11,10 @@
 //     last word left it: start + stride if adv, else back to the start,
 //     within the wrap block; a tile layer's does not move;
 //   - a stride written mid-line applies at that line's end; ngroups and
-//     act changed mid-line apply only from the next line.
+//     act changed mid-line apply only from the next line;
+//   - depth and hscale written mid-line reach gset with some group of the
+//     line, old settings then new (revision 2), and the group's words are
+//     laid out to the depth gset says it was fetched with.
 // The pixel side is a stand-in that takes each group as soon as it is full
 // (away from the line start), so every group of every line is fetched and
 // the pointer rules apply.
@@ -49,6 +52,7 @@ module tb_model;
     wire [128*NL-1:0] dat;
     wire [10*NL-1:0]  attr;
     wire [NL-1:0]     fill_t;
+    wire [6*NL-1:0]   gset;
     wire [15:0]       dat_rdata;
 
     layer_fetch #(.NL(NL), .AW(AW), .PW(PW), .PLANAR(PLANAR), .TILES(TILES), .DATWRITE(0), .LITTLE(LITTLE)) dut (
@@ -57,7 +61,7 @@ module tb_model;
         .ngroups(ngroups), .tile(tile), .mapw(mapw), .ty(ty), .tcol(tcol), .mappt(mappt), .patpt(patpt),
         .ptr_sel(ptr_sel), .ptr_wr(ptr_wr), .ptr_wdata(ptr_wdata), .ptr_rdata(ptr_rdata),
         .dat_wr(1'b0), .dat_sel({(LW+3){1'b0}}), .dat_wdata(16'd0), .dat_be(2'd0), .dma_en({8*NL{1'b1}}),
-        .dat_rdata(dat_rdata), .dat(dat), .attr(attr), .fill_t(fill_t), .take_t(take_t),
+        .dat_rdata(dat_rdata), .dat(dat), .attr(attr), .gset(gset), .fill_t(fill_t), .take_t(take_t),
         .req(req), .urgent(urgent), .addr(addr), .ack(ack), .rvalid(rvalid), .rdata(rdata));
 
     // ---------------------------------------------------------------- memory
@@ -91,7 +95,10 @@ module tb_model;
     reg [PW-1:0] m_run  [0:8*NL-1];      // walking through the current line
     reg [11:0]   m_ngr  [0:NL-1];        // the line's settings, as copied at its start
     reg          m_act  [0:NL-1], m_adv [0:NL-1], m_tile [0:NL-1], m_planar [0:NL-1];
-    reg [2:0]    m_depth [0:NL-1];
+    reg [2:0]    m_depth [0:NL-1];       // the depth the line started with, then the last group's
+    reg [2:0]    m_dep0 [0:NL-1], m_dep2 [0:NL-1];   // the line's first settings and the mid-line ones
+    reg [1:0]    m_hs0  [0:NL-1], m_hs2  [0:NL-1];
+    reg          m_new  [0:NL-1];        // a group with the mid-line settings has filled
     reg [1:0]    m_mw   [0:NL-1];
     reg [6:0]    m_row  [0:NL-1], m_col [0:NL-1];
     reg [2:0]    m_trow [0:NL-1];
@@ -210,6 +217,7 @@ module tb_model;
     // ---------------------------------------------------------------- stimulus
     integer   cyc = 0, line = 0, lines_left = 0, line_len = 0, ptr_ld = 0, p;
     integer   errors = 0, n_groups = 0, n_tiles = 0, n_ptr_checks = 0, n_stride_mid = 0, n_unfinished = 0;
+    integer   n_set_mid = 0, n_set_new = 0, set_at = 0, set_layer = 0;
     reg       first_line = 1;
     reg [31:0] r;
     task fail(input [8*12-1:0] what, input integer l, input [127:0] got, input [127:0] want);
@@ -266,8 +274,10 @@ module tb_model;
                     r = $random;
                     m_depth[n]  = m_planar[n] ? r[2:0] : (r[1:0] == 2'd0 ? 3'd0 : r[1:0] == 2'd1 ? 3'd1 : r[1:0] == 2'd2 ? 3'd3 : 3'd7);
                     depth[3*n +: 3] <= m_depth[n];
+                    m_dep0[n] = m_depth[n];  m_dep2[n] = m_depth[n];
+                    m_hs0[n]  = {$random} % 4;  m_hs2[n] = m_hs0[n];  hscale[2*n +: 2] <= m_hs0[n];
+                    m_new[n]  = 1'b0;
                     m_ngr[n]    = 1 + ({$random} % 4);                ngroups[12*n +: 12] <= m_ngr[n];
-                    hscale[2*n +: 2] <= {$random} % 4;
                     wrap[4*n +: 4]   <= ({$random} % 2) ? 4'd0 : 4'd1 + ({$random} % 4);
                     stride[16*n +: 16] <= $random;
                     m_mw[n]     = {$random} % 4;                     mapw[2*n +: 2] <= m_mw[n];
@@ -279,6 +289,8 @@ module tb_model;
                     for (w = 0; w < 8; w = w + 1) m_run[8*n + w] = m_pt[8*n + w];
                     if (m_tile[n]) read_entries(n);                  // the first group's entries, read ahead
                 end
+                set_at    = 12 + ({$random} % 160);                  // a depth and scale change, early in the line
+                set_layer = {$random} % NL;
             end else begin
                 lines_left <= lines_left - 1;
                 // Just after the line start: a new stride for a layer whose
@@ -291,6 +303,15 @@ module tb_model;
                     if (!m_tile[n] && (m_planar[n] ? (m_ngr[n] >= 2 && m_depth[n] >= 2) : (m_depth[n] + 1) * m_ngr[n] >= 6)) begin
                         stride[16*n +: 16] <= $random;  n_stride_mid = n_stride_mid + 1;
                     end
+                end
+                if (lines_left == line_len - set_at && !m_planar[set_layer]) begin
+                    // New depth (chunky, or a tile layer's) and scale for one
+                    // layer: the groups still to start fetch with them
+                    n = set_layer;  r = $random;
+                    m_dep2[n] = (r[1:0] == 2'd0 ? 3'd0 : r[1:0] == 2'd1 ? 3'd1 : r[1:0] == 2'd2 ? 3'd3 : 3'd7);
+                    m_hs2[n]  = r[3:2];
+                    depth[3*n +: 3] <= m_dep2[n];  hscale[2*n +: 2] <= m_hs2[n];
+                    n_set_mid = n_set_mid + 1;
                 end
                 if (lines_left == 250) begin
                     n = {$random} % NL;  ngroups[12*n +: 12] <= 12'd40;  act[n] <= ~act[n];
@@ -306,6 +327,14 @@ module tb_model;
             if (fill_t[t] != take_t[t]) begin
                 take_t[t] <= ~take_t[t];
                 if (m_grp[t] < m_ngr[t] && m_act[t]) begin
+                    // The group's settings: the line's, or the mid-line ones
+                    // from some group on, and the planar flag as set
+                    if (gset[6*t] !== ((PLANAR != 0) && m_planar[t])) fail("gset planar", t, {127'd0, gset[6*t]}, {127'd0, m_planar[t]});
+                    if (!m_new[t] && gset[6*t + 1 +: 5] == {m_hs0[t], m_dep0[t]}) m_depth[t] = m_dep0[t];
+                    else if (gset[6*t + 1 +: 5] == {m_hs2[t], m_dep2[t]}) begin
+                        if (!m_new[t] && {m_hs2[t], m_dep2[t]} != {m_hs0[t], m_dep0[t]}) n_set_new = n_set_new + 1;
+                        m_new[t] = 1'b1;  m_depth[t] = m_dep2[t];
+                    end else fail("gset", t, {122'd0, gset[6*t +: 6]}, {122'd0, m_hs2[t], m_dep2[t], 1'b0});
                     expect_group(t);
                     n_groups = n_groups + 1;
                     if (m_tile[t]) n_tiles = n_tiles + 1;
@@ -321,9 +350,9 @@ module tb_model;
         ptr_ld = (PLANAR != 0) ? 16 * NL : 2 * NL;
         repeat (150000) @(posedge clk);
         @(negedge clk);
-        $display("NL=%0d PLANAR=%0d TILES=%0d LITTLE=%0d: %0d lines, %0d groups checked (%0d tile), %0d pointer checks (%0d unfinished lines), %0d mid-line strides",
-                 NL, PLANAR, TILES, LITTLE, line, n_groups, n_tiles, n_ptr_checks, n_unfinished, n_stride_mid);
-        if (n_groups < 200 || n_ptr_checks < 50 || ((TILES != 0) && n_tiles == 0) || n_unfinished > n_ptr_checks / 20) begin
+        $display("NL=%0d PLANAR=%0d TILES=%0d LITTLE=%0d: %0d lines, %0d groups checked (%0d tile), %0d pointer checks (%0d unfinished lines), %0d mid-line strides, %0d mid-line settings (%0d reached a group)",
+                 NL, PLANAR, TILES, LITTLE, line, n_groups, n_tiles, n_ptr_checks, n_unfinished, n_stride_mid, n_set_mid, n_set_new);
+        if (n_groups < 200 || n_ptr_checks < 50 || ((TILES != 0) && n_tiles == 0) || n_unfinished > n_ptr_checks / 20 || n_set_new < 10) begin
             errors = errors + 1;
             $display("ERROR: a case never came up, or too many lines ran out");
         end

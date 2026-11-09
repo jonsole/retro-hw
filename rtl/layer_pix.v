@@ -23,8 +23,15 @@
 // PAL is added to palofs for depths of up to 4 bits; PRI goes out with the
 // pixel for the priority stage.
 //
-// Without PLANAR the planar, planes inputs are not used; without TILES the
-// tile and attr inputs are not used and pri reads 0.
+// A group brings its own settings (gset, taken with it from the layer
+// fetch): whether it is planar, its depth, and its scale. So a setting the
+// machine changes mid-line applies from the next group the fetch starts,
+// never inside one, and the fetch and this unit always agree about a
+// group. transp and palofs are read live, straight from the machine's
+// registers on its own clock (a raw crossing; spec 4.4).
+//
+// Without PLANAR gset's planar flag is not used; without TILES the tile and
+// attr inputs are not used and pri reads 0.
 module layer_pix #(
     parameter PLANAR = 1,              // 1: planar layers built
     parameter TILES  = 0               // 1: tile layers' PAL and PRI built
@@ -40,18 +47,16 @@ module layer_pix #(
     // This line's settings (stable through the line)
     input  wire         active,        // the layer shows on this line
     input  wire [10:0]  xs, xe,        // window
-    input  wire         planar,        // (PLANAR) a planar layer
-    input  wire [1:0]   lb,            // chunky: log2 of bits per pixel
-    input  wire [2:0]   planes,        // (PLANAR) planar: planes - 1
-    input  wire [1:0]   hs,            // log2 of the horizontal scale
     input  wire [3:0]   pos0,          // first pixel in the first group (fine scroll)
+    input  wire         tile,          // (TILES) a tile map: PAL and PRI from attr
+    // Live, from the machine's registers (raw crossing)
     input  wire         transp,
     input  wire [3:0]   palofs,
-    input  wire         tile,          // (TILES) a tile map: PAL and PRI from attr
 
-    // The data registers, and the full / taken handshake (toggles)
+    // The data registers, the group's settings, and the full / taken handshake (toggles)
     input  wire [127:0] dat,           // data register 0 in the lowest 16 bits
     input  wire [9:0]   attr,          // (TILES) {PRI, PAL} of column 1 (9-5) and column 0 (4-0)
+    input  wire [5:0]   gset,          // {hs, depth, planar}: log2 of the scale, words - 1, (PLANAR) planar
     input  wire         fill_t,        // from the system clock side
     output reg          take_t,
 
@@ -70,11 +75,15 @@ module layer_pix #(
     always @(posedge clk_pix5) fill_s <= {fill_s[0], fill_t};
     wire        avail  = fill_s[1] != take_t;
     wire        in_win = active && (hc >= xs) && (hc < xe);
-    wire        pl     = (PLANAR != 0) && planar;
     wire        tl     = (TILES != 0) && tile;
 
     reg  [15:0] sh [0:7];              // shifters
     reg  [9:0]  sha;                   // ... and the group's PAL and PRI (tiles)
+    reg  [5:0]  shg;                   // ... and its settings
+    wire        pl     = (PLANAR != 0) && shg[0];
+    wire [2:0]  planes = shg[3:1];                         // planar: planes - 1
+    wire [1:0]  lb     = shg[3] ? 2'd3 : shg[2] ? 2'd2 : shg[1] ? 2'd1 : 2'd0;   // chunky: log2 of bits per pixel, from words - 1
+    wire [1:0]  hs     = shg[5:4];
     reg         ok;                    // the current group arrived
     reg         primed;                // the line's first group is in the shifters
     reg  [3:0]  pos;                   // pixel in the group
@@ -111,6 +120,7 @@ module layer_pix #(
             if (avail) begin
                 for (i = 0; i < 8; i = i + 1) sh[i] <= dat[16*i +: 16];
                 sha    <= (TILES != 0) ? attr : 10'd0;
+                shg    <= gset;
                 take_t <= ~take_t;
                 ok     <= 1'b1;
             end else begin

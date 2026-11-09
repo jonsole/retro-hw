@@ -24,6 +24,12 @@
 // on a line saves the pointer (the line's start); the last sets it to that
 // start + stride, or back to the start on a repeated line.
 //
+// A group's depth, planar flag and scale are taken as it starts (stage A
+// of its first word), from a one-clock register of the settings, and go
+// out with it in gset for layer_pix: a setting the machine changes applies
+// from a layer's next group, never inside one, and the two cores always
+// agree about a group.
+//
 // A fetch takes two clocks, A then B (spec 4.8); memory cycles are two
 // clocks apart, so this costs nothing. urgent is a register: the compare
 // for the request that req carries in this clock, with the deadline of
@@ -83,6 +89,7 @@ module layer_fetch #(
     // To layer_pix
     output wire [128*NL-1:0] dat,
     output wire [10*NL-1:0]  attr,
+    output wire [6*NL-1:0]   gset,       // the group's settings: {hscale, depth, planar} a layer
     output reg  [NL-1:0]     fill_t,
     input  wire [NL-1:0]     take_t,
 
@@ -183,6 +190,8 @@ module layer_fetch #(
         end
         for (g = 0; g < NL; g = g + 1) begin : aout
             assign attr[10*g +: 10] = (TILES != 0) ? at[g] : 10'd0;
+            assign gset[6*g +: 6]   = {g_hs[g], g_dep[g], g_pl[g]};
+            assign newg[g]          = (rem[g] == 10'd0);
         end
     endgenerate
     assign dat_rdata = (DATWRITE != 0) ? dr[dat_sel] : 16'd0;
@@ -199,7 +208,7 @@ module layer_fetch #(
 
     // Tiles: copied at line_go
     reg  [NL-1:0] t_tile;
-    reg  [1:0]    t_lb  [0:NL-1], t_mw [0:NL-1];
+    reg  [1:0]    t_mw [0:NL-1];
     reg  [6:0]    t_row [0:NL-1], ecol [0:NL-1];
     reg  [2:0]    t_trow [0:NL-1];
     reg  [PW-1:0] t_map [0:NL-1], t_pat [0:NL-1];
@@ -207,18 +216,37 @@ module layer_fetch #(
     reg  [PW-1:0] rowbase [0:NL-1], eaddr [0:NL-1];
     reg  [PW-1:0] pn [0:ENN-1];
 
-    // DATWRITE: the fetch enables (and with them the depth), registered; a
-    // group takes them as it starts
+    // The settings a group takes as it starts: registered a clock (rs_*),
+    // and kept for the group (g_*). With DATWRITE the fetch enables, with
+    // the depth in them, are registered the same way (em).
+    reg  [2:0]    rs_dep [0:NL-1], g_dep [0:NL-1];
+    reg  [1:0]    rs_hs  [0:NL-1], g_hs  [0:NL-1];
+    reg  [NL-1:0] rs_pl, g_pl;
     reg  [7:0]    em [0:NL-1];
+    // The settings for a layer's word: a new group's are the registered
+    // ones (it takes them now), a started group's its own
+    wire [NL-1:0] newg;                                  // rem == 0
+    reg  [2:0]    e_dep [0:NL-1];
+    reg  [1:0]    e_lb  [0:NL-1];
+    reg  [NL-1:0] e_pl;
+    always @(*) begin
+        for (n = 0; n < NL; n = n + 1) begin
+            e_dep[n] = newg[n] ? rs_dep[n] : g_dep[n];
+            e_lb[n]  = lb_of(e_dep[n]);
+            e_pl[n]  = newg[n] ? rs_pl[n] : g_pl[n];
+        end
+    end
 
     // The registers a group fills (slots 9-2), and for a tile layer the
     // entries it reads (slots 1, 0): highest first
     reg  [7:0]    used_l  [0:NL-1];            // the data registers the depth uses
     reg  [7:0]    en_l    [0:NL-1];            // ... of which the fetch fills (live, for the line start)
     reg  [9:0]    gmask_l [0:NL-1];
+    reg  [7:0]    used_r  [0:NL-1];            // ... as registered, for the group mask
     always @(*) begin
         for (n = 0; n < NL; n = n + 1) begin
             used_l[n] = 8'hFF >> (3'd7 - depth[3*n +: 3]);
+            used_r[n] = 8'hFF >> (3'd7 - rs_dep[n]);
             if (DATWRITE != 0)
                 en_l[n] = ((PLANAR != 0) && planar[n]) ? (dma_en[8*n +: 8] & used_l[n])
                                                         : (dma_en[8*n] ? used_l[n] : 8'd0);
@@ -228,10 +256,10 @@ module layer_fetch #(
                 if (left[n] == ngr[n])
                     gmask_l[n] = 10'b00_0000_0011;                   // the line's first: entries only
                 else
-                    gmask_l[n] = {(lb_of(depth[3*n +: 3]) == 2'd0) ? 8'h03 : used_l[n],
+                    gmask_l[n] = {(lb_of(rs_dep[n]) == 2'd0) ? 8'h03 : used_r[n],
                                   (left[n] == 12'd1) ? 2'b00 : 2'b11};
             end else
-                gmask_l[n] = {(DATWRITE != 0) ? em[n] : used_l[n], 2'b00};   // em already has the depth in it
+                gmask_l[n] = {(DATWRITE != 0) ? em[n] : used_r[n], 2'b00};   // em already has the depth in it
         end
     end
 
@@ -271,7 +299,7 @@ module layer_fetch #(
     wire [3:0]    sl_n    = sl_l[pick];
     wire [9:0]    rem_n   = rn_l[pick];
     wire [2:0]    pl_n    = sl_n[2:0] - 3'd2;                       // the data register (slots 9-2)
-    wire          perpl   = (PLANAR != 0) && planar[pick];          // a pointer a plane
+    wire          perpl   = (PLANAR != 0) && e_pl[pick];            // a pointer a plane
     wire [PIW-1:0] pi;                                               // the pointer the pick reads
     wire [PIW-1:0] wi;                                               // the pointer ptr_sel names
     generate
@@ -295,7 +323,7 @@ module layer_fetch #(
     wire          last_w  = last_g  && (perpl || rem_n == 10'd0);
 
     // Tiles: the column a pattern slot belongs to, and which word of its row
-    wire [1:0]    lbp     = lb_of(depth[3*pick +: 3]);
+    wire [1:0]    lbp     = e_lb[pick];
     wire [2:0]    kcol    = (lbp == 2'd0) ? 3'd1 : 3'd1 << (lbp - 1'b1);
     wire          pcol    = (pl_n < kcol);                           // 1: column 1 (the lower registers)
     wire [2:0]    pbase   = pcol ? 3'd0 : kcol;
@@ -312,6 +340,11 @@ module layer_fetch #(
     reg  [9:0]    a_rem_n;
     reg  [2:0]    a_j;
     reg  [PW-1:0] a_pt, a_sv;
+    always @(posedge clk) if (a_go && gstart) begin                // the group takes its settings
+        g_dep[pick] <= rs_dep[pick];
+        g_hs[pick]  <= rs_hs[pick];
+        g_pl[pick]  <= rs_pl[pick];
+    end
     always @(posedge clk) if (a_go) begin
         a_pick    <= pick;
         a_slot    <= sl_n;
@@ -365,7 +398,10 @@ module layer_fetch #(
     // only makes a decision late, not wrong.
     always @(posedge clk) begin
         for (n = 0; n < NL; n = n + 1) begin
-            em[n] <= en_l[n];
+            em[n]     <= en_l[n];
+            rs_dep[n] <= depth[3*n +: 3];
+            rs_hs[n]  <= hscale[2*n +: 2];
+            rs_pl[n]  <= (PLANAR != 0) && planar[n];
             for (k = 0; k < NL; k = k + 1) dlt[NL*n + k] <= dl[n] < dl[k];
             want[n] <= !rst && !line_go &&
                        ((b_go && a_pick == n) ? (a_rem_n != 10'd0)
@@ -387,8 +423,8 @@ module layer_fetch #(
             eaddr[m]   <= rowbase[m] + {{(PW-8){1'b0}}, ecol[m], 1'b0};
             for (c = 0; c < 2; c = c + 1) begin
                 tr = ent[2*m + c][14] ? ~t_trow[m] : t_trow[m];                        // YFLIP
-                pn[2*m + c] <= t_pat[m] + ({{(PW-9){1'b0}}, ent[2*m + c][8:0]} << (3'd3 + {1'b0, t_lb[m]}))
-                                        + ({{(PW-3){1'b0}}, tr} << t_lb[m]);
+                pn[2*m + c] <= t_pat[m] + ({{(PW-9){1'b0}}, ent[2*m + c][8:0]} << (3'd3 + {1'b0, e_lb[m]}))
+                                        + ({{(PW-3){1'b0}}, tr} << e_lb[m]);
             end
         end
     end
@@ -413,10 +449,10 @@ module layer_fetch #(
     wire [7:0]    r_byte0 = r_hi ? rdata[15:8] : rdata[7:0];
     wire [7:0]    r_byte  = q_flip[q_h] ? rev8(r_byte0) : r_byte0;
     wire          r_tile  = (TILES != 0) && t_tile[r_layer];
-    wire [15:0]   r_word  = (r_tile && q_flip[q_h]) ? pixrev(r_sw, t_lb[r_layer]) : r_sw;
+    wire [15:0]   r_word  = (r_tile && q_flip[q_h]) ? pixrev(r_sw, lb_of(g_dep[r_layer])) : r_sw;
     wire          r_ok    = rvalid && (q_gen[q_h] == gen);
     wire          r_ent   = r_ok && (TILES != 0) && r_slot < 4'd2;
-    wire          r_b1    = r_ok && !r_ent && r_tile && t_lb[r_layer] == 2'd0;   // a 1-bit tile row's byte
+    wire          r_b1    = r_ok && !r_ent && r_tile && g_dep[r_layer] == 3'd0;  // a 1-bit tile row's byte
     wire          r_wr    = r_ok && !r_ent && !r_b1;
 
     // DATWRITE: nothing of the layer is fetched (judged live), so a write of
@@ -437,7 +473,7 @@ module layer_fetch #(
         else if (ack) n_req = 1'b0;
         n_rem = (b_go && a_pick == n_layer) ? a_rem_n : rem[n_layer];
     end
-    wire [1:0]  n_lb  = lb_of(depth[3*n_layer +: 3]);
+    wire [1:0]  n_lb  = lb_of(g_dep[n_layer]);                                      // the group's own depth
     wire [4:0]  n_wl  = n_ent ? {4'd0, n_rem[1]} + {4'd0, n_rem[0]} + 5'd1 + ((n_lb == 2'd0) ? 5'd2 : (5'd1 << n_lb))
                               : {1'b0, ones(n_rem[9:2])} + 5'd1;                       // words not yet through B, + 1
     wire [10:0] n_dl0 = {1'b0, dl[n_layer]};
@@ -452,7 +488,7 @@ module layer_fetch #(
         take_s3 <= take_s2;
         for (n = 0; n < NL; n = n + 1)
             if (take_s3[n] != take_s2[n]) begin                                      // a group was taken
-                dl[n] <= first_take[n] ? DL_NONE : 10'd59 << hscale[2*n +: 2];
+                dl[n] <= first_take[n] ? DL_NONE : 10'd59 << g_hs[n];          // the taken group's scale
                 first_take[n] <= 1'b0;
             end else if (dl[n] != 10'd0 && dl[n] != DL_NONE) dl[n] <= dl[n] - 1'b1;
 
@@ -470,9 +506,10 @@ module layer_fetch #(
             firstg <= {NL{1'b0}};  lastg <= {NL{1'b0}};
             t_tile <= {NL{1'b0}};
             first_take <= {NL{1'b0}};
+            g_pl <= {NL{1'b0}};
             for (n = 0; n < NL; n = n + 1) begin
                 left[n] <= 12'd0;  ngr[n] <= 12'd0;  rem[n] <= 10'd0;  dl[n] <= DL_NONE;
-                at[n]   <= 10'd0;
+                at[n]   <= 10'd0;  g_dep[n] <= 3'd0;  g_hs[n] <= 2'd0;
             end
             for (n = 0; n < 8*NL; n = n + 1) dr[n] <= 16'd0;
         end else begin
@@ -506,7 +543,6 @@ module layer_fetch #(
                     dl[n]     <= DL_NONE;                              // no deadline until the first in-window take
                     first_take[n] <= 1'b1;
                     fill_t[n] <= take_s2[n];                           // empty: last line's spare group is dropped
-                    t_lb[n]   <= lb_of(depth[3*n +: 3]);
                     t_mw[n]   <= mapw[2*n +: 2];
                     t_row[n]  <= ty[10*n + 3 +: 7];
                     t_trow[n] <= ty[10*n +: 3];

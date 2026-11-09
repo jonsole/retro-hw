@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by 0007 for depth, planar and scale; wrap and stride stay live
 ---
 
 # Depth, scale, wrap and stride are read live, on purpose

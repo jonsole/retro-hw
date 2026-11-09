@@ -1,6 +1,6 @@
 # Layer fetch (layer_fetch)
 
-Status: **draft**, revision 2 for review: a group's depth, planar flag and scale are taken at the group's start and travel with it to `layer_pix` (`gset`). Revision 1 is implemented (`rtl/layer_fetch.v`) and adopted by retro-z80; revision 2 was agreed by both machines (retro68k #34, retro-z80 design plan branch 26). To be locked together with `layer_pix` once both machines have adopted it.
+Status: **draft**, revision 2: a group's depth, planar flag and scale are taken at the group's start and travel with it to `layer_pix` (`gset`). Agreed by both machines (retro68k #34, retro-z80 design plan branch 26) and implemented (`rtl/layer_fetch.v`, PR #9); retro-z80 runs revision 1. To be locked together with `layer_pix` once both machines have adopted it.
 
 The layer fetch reads each layer's words from memory, one 16-pixel group at a time, into the layer's data registers, where `layer_pix.v` takes them. It is one requester on the memory scheduler (`dmac.v`) for all its layers, and picks which layer asks next by earliest deadline. It counts each layer's pointer on as it reads, and moves it to the next line's start at the end of a line.
 
@@ -42,7 +42,7 @@ Settings are read at one of three times:
 | `line_gen` | out | 1 | Toggles with `line_go` | – |
 | `act` | in | NL | The layer shows on the line about to be fetched | Copied at `line_go` |
 | `adv` | in | NL | Its pointers move on to the next source line after this line (else back to this line's start: a repeated line of a vertically scaled layer) | Copied at `line_go` |
-| `depth` | in | 3×NL | Words per group − 1: planes − 1 for a planar layer; for a chunky layer, bits a pixel − 1 as a word count (0, 1, 3 or 7) | Taken at a group's start, through a one-clock register (the same one as `dma_en`). Read live for the urgent count, which is only an estimate: a change mid-line can make one urgent decision a little early or late, never corrupt a group. A tile layer's rows are stored with the depth its pattern group took |
+| `depth` | in | 3×NL | Words per group − 1: planes − 1 for a planar layer; for a chunky layer, bits a pixel − 1 as a word count (0, 1, 3 or 7) | Taken at a group's start, through a one-clock register (the same one as `dma_en`). The urgent count of a map entry's request (the rows still to come in its group) uses the group's depth too. A tile layer's rows are stored with the depth its pattern group took |
 | `planar` | in | NL | `PLANAR`: the layer is planar, one pointer per plane | Taken at a group's start, as `depth` |
 | `hscale` | in | 2×NL | log2 of the horizontal scale. Sets how long a group lasts (4.4) | Taken at a group's start, as `depth`; the deadline uses the taken group's. A map entry's deadline, a group further on, uses the live value: the next group hasn't started, so it has no taken value yet |
 | `wrap` | in | 4×NL | 0: no wrap. n: the layer's pointers wrap within an aligned block of 2^(n+9) bytes | Read live, on every pointer move |
@@ -184,12 +184,12 @@ Yosys 0.33, `synth_xilinx` for 7-series, the core alone with the machine's build
 
 | Build | LUTs | Flip-flops | LUT RAM |
 |-------|------|------------|---------|
-| retro68k's (`PLANAR`, `DATWRITE`, PW 23) | 1840 | 885 | 13 |
+| retro68k's (`PLANAR`, `DATWRITE`, PW 23) | 1850 | 915 | 13 |
 | retro68k's `bpldma.v` | 1753 | 870 | 12 |
-| retro-z80's (`TILES`, `LITTLE`) | 1820 | 1344 | 13 |
+| retro-z80's (`TILES`, `LITTLE`) | 1918 | 1377 | 13 |
 | retro-z80's `bpldma.v` | 2123 | 1754 | 1 |
 
-Most of the flip-flops are the 384 data registers. The core is a little larger than retro68k's fetch (the generic widths, the second synchroniser flop, the registered `urgent`) and smaller than retro-z80's, whose bus registers and pointer capture are now the machine's, and whose pointers were flip-flops where the core uses LUT RAM. The machines' Vivado builds are the ones that count.
+Most of the flip-flops are the 384 data registers. Revision 2 (the per-group settings, `gset`) cost retro-z80's build about 100 LUTs and 30 flip-flops, retro68k's 10 and 30. The core is a little larger than retro68k's fetch (the generic widths, the second synchroniser flop, the registered `urgent`) and smaller than retro-z80's, whose bus registers and pointer capture are now the machine's, and whose pointers were flip-flops where the core uses LUT RAM. The machines' Vivado builds are the ones that count.
 
 ### 4.10 Reset
 
@@ -208,9 +208,9 @@ Most of the flip-flops are the 384 data registers. The core is a little larger t
 
 | Test | What it checks |
 |------|----------------|
-| `test/layer_fetch`, `tb_lock68k` and `tb_lockz80` | The core beside frozen copies of retro68k's and retro-z80's `bpldma.v` (`ref/`), each built to match (retro68k: `PLANAR`, `DATWRITE`, PW 23; retro-z80: `TILES`, `LITTLE`), on the same random settings, register writes, takes and a memory that is busy or quiet by spells, for 600,000 clocks each. Every clock: `dat`, `attr`, `fill_t`, `req`, `addr`, `line_go`, `line_gen` and every pointer equal. `urgent` against the reference's compare with the words left now, the deadline of the clock before and the mark + 1. The reference's `deadline` is not compared. Allowed for: `line_t` reaches the reference a clock later (the core has one more synchroniser flop); retro68k's BPLDMA writes are made only in `line_go` clocks (it restarted a fetch on them, the core does not); pointers are loaded before the first line. The register-file side of each machine is modelled in the test bench |
-| `test/layer_fetch`, `tb_model` | Builds the machines don't have, against a model of the data path and the pointer rules: one tile layer, little-endian (retro-z80's KS2 shape); four chunky layers; two layers with `PLANAR`, little-endian. Memory is a hash of the address, so every group's words follow from the pointer rules: each group that fills is checked word by word (tiles: the rows the entries pick, and `attr`), and at each line start every pointer is checked against start + stride (or the start) within the wrap block. A stride written just after the line start applies at its end; `ngroups` and `act` changed mid-line leave the line alone |
-| `test/layer_pix` | Unchanged |
+| `test/layer_fetch`, `tb_lock68k` and `tb_lockz80` | The core beside frozen copies of retro68k's and retro-z80's `bpldma.v` (`ref/`), each built to match (retro68k: `PLANAR`, `DATWRITE`, PW 23; retro-z80: `TILES`, `LITTLE`), on the same random settings, register writes, takes and a memory that is busy or quiet by spells, for 600,000 clocks each. Every clock: `dat`, `attr`, `fill_t`, `req`, `addr`, `line_go`, `line_gen` and every pointer equal. `urgent` against the reference's compare with the words left now, the deadline of the clock before and the mark + 1. The reference's `deadline` is not compared. Allowed for: `line_t` reaches the reference a clock later (the core has one more synchroniser flop); retro68k's BPLDMA writes are made only in `line_go` clocks (it restarted a fetch on them, the core does not); pointers are loaded before the first line. The register-file side of each machine is modelled in the test bench. Revision 2: depth, planar and scale change only in the line's first clock (the references read them live, the core takes them per group), and `urgent` is not compared in the `line_go` clock (the reference marks the request that `line_go` is dropping with the new line's depth, the core with its group's) |
+| `test/layer_fetch`, `tb_model` | Builds the machines don't have, against a model of the data path and the pointer rules: one tile layer, little-endian (retro-z80's KS2 shape); four chunky layers; two layers with `PLANAR`, little-endian. Memory is a hash of the address, so every group's words follow from the pointer rules: each group that fills is checked word by word (tiles: the rows the entries pick, and `attr`), and at each line start every pointer is checked against start + stride (or the start) within the wrap block. A stride written just after the line start applies at its end; `ngroups` and `act` changed mid-line leave the line alone. Depth and scale written early in the line: every group's `gset` is the line's settings or, from some group on, the new ones (never back), with the planar flag as set, and the group's words are checked at the depth its `gset` says |
+| `test/layer_pix` | Each group shown with its own `gset` (`layer_pix` spec, section 6) |
 | The machines' system tests | Each machine's video tests, with the core in place of its `bpldma.v` |
 
 ## 7. Open points
@@ -222,4 +222,4 @@ Most of the flip-flops are the 384 data registers. The core is a little larger t
 | F3 | `sprite_fetch.v` has the same unused deadline output and a combinational urgent; it could get the same treatment |
 | F4 | The deadline's 59 clocks a group assumes about 3.7 system clocks a screen pixel (576p at 100 MHz). A machine with another pixel clock needs it as a parameter |
 | F5 | retro-z80's planned attribute layer (its video spec 7.1) needs no core change: it is a fourth layer (`NL` = 4) set up as 1-bit chunky, one word (two cells) a group, with its own pointer through `ptr_wr`, its own stride, wrap 0, the target layer's `hscale`, `adv` only on a cell row's last line, and its own `ngroups`. Its `fill_t` and `take_t` go to an attribute shifter in place of `layer_pix`. retro-z80 will confirm when it builds it on the KS3. With revision 2 each layer takes its scale at its own group starts, and the attribute layer's group starts are not the target's, so a mid-line scale change on the target is not followed exactly by its attribute layer: retro-z80 will either forbid it or take the attribute layer's scale from the target's `gset` |
-| F6 | Revision 2 (per-group settings, `gset`) is specified here and in `layer_pix`; the RTL and tests follow its review. Until then `rtl/layer_fetch.v` is revision 1: depth, planar and scale live, no `gset` |
+| F6 | Closed: revision 2 (per-group settings, `gset`) is implemented in `rtl/layer_fetch.v` and `rtl/layer_pix.v` with the tests of section 6 (PR #9). The machines adopt it when they take the new cores: `gset` must be wired through, and `layer_pix` no longer has `planar`, `lb`, `planes` and `hs` inputs |

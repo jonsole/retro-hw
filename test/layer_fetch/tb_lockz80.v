@@ -6,8 +6,10 @@
 // addr, line_go, line_gen and the pointers. urgent is checked against the
 // reference's compare made with the deadline of the clock before and the
 // mark + 1 (spec 4.4). Allowed differences (spec 6): line_t reaches the
-// reference a clock later (the core has one more synchroniser flop), and
-// the pointers are loaded before the first line.
+// reference a clock later (the core has one more synchroniser flop), the
+// pointers are loaded before the first line, depth and scale change only
+// in the line's first clock (the core takes them per group), and urgent is
+// not compared in the line_go clock.
 //
 // The register-file side of retro-z80's bpldma (byte registers, the
 // pointer capture) is modelled here, as the machine's wrapper would.
@@ -186,26 +188,29 @@ module tb_lockz80;
                 line_t_c   <= ~line_t_c;
                 lines_left <= 300 + ({$random} % 700);
                 line       <= line + 1;
-                for (j = 0; j < 3; j = j + 1) begin
-                    act[j]      <= (r[2*j +: 2] != 2'd0);
-                    adv[j]      <= r[6+j];
-                    tile[j]     <= r[9+j];
-                    lbpp[2*j +: 2] <= {$random} % 4;
-                    hscale[2*j +: 2] <= (r[18+j]) ? 2'd0 : {$random} % 4;
-                    ngroups[12*j +: 12] <= r[21+j] ? 12'd0 : 12'd1 + ({$random} % 40);
-                    mapw[2*j +: 2] <= {$random} % 4;
-                    ty[10*j +: 10] <= $random;
-                    tcol[7*j +: 7] <= $random;
-                end
             end else begin
+                if (line_t_c != line_t_r) begin
+                    // The line's settings, in the clock before line_go (the
+                    // reference copies at line_go; the core takes depth and
+                    // scale per group, revision 2, so they change only here)
+                    for (j = 0; j < 3; j = j + 1) begin
+                        act[j]      <= (r[2*j +: 2] != 2'd0);
+                        adv[j]      <= r[6+j];
+                        tile[j]     <= r[9+j];
+                        lbpp[2*j +: 2] <= {$random} % 4;
+                        hscale[2*j +: 2] <= (r[18+j]) ? 2'd0 : {$random} % 4;
+                        ngroups[12*j +: 12] <= r[21+j] ? 12'd0 : 12'd1 + ({$random} % 40);
+                        mapw[2*j +: 2] <= {$random} % 4;
+                        ty[10*j +: 10] <= $random;
+                        tcol[7*j +: 7] <= $random;
+                    end
+                end
                 lines_left <= lines_left - 1;
                 // Live settings change mid-line now and then
-                if (r[7:0] == 8'd1) begin j = {$random} % 3; hscale[2*j +: 2] <= {$random} % 4; end
                 if (r[7:0] == 8'd2) begin j = {$random} % 3; wrap[4*j +: 4] <= ({$random} % 2) ? 4'd0 : 4'd1 + ({$random} % 6); end
                 if (r[7:0] == 8'd3) begin j = {$random} % 3; act[j] <= ~act[j]; end
                 if (r[7:0] == 8'd4) begin j = {$random} % 3; ngroups[12*j +: 12] <= 12'd1 + ({$random} % 40); end
                 if (r[7:0] == 8'd5) enable <= ~enable;
-                if (r[7:0] == 8'd6) begin j = {$random} % 3; lbpp[2*j +: 2] <= {$random} % 4; end
                 if (r[7:0] == 8'd7) begin j = {$random} % 3; tile[j] <= ~tile[j]; end
             end
             // One byte register write a clock at most
@@ -220,7 +225,7 @@ module tb_lockz80;
     integer d;
     integer errors = 0, checks = 0, n_req = 0, n_urg = 0, n_fill = 0, n_ptrw = 0, n_tile = 0, n_ent = 0, n_flip = 0;
     reg [9:0]  prev_dl [0:2];
-    reg [5:0]  prev_hs;
+    reg [5:0]  prev_hs, prev_lb;
     reg [4:0]  wl;
     reg [9:0]  rr;
     reg [1:0]  lb;
@@ -255,18 +260,22 @@ module tb_lockz80;
         if (r_req && c_addr !== r_addr) fail("addr", c_addr, r_addr);
         if (ptr_sel[4:3] != 2'd3 && ptr_rdata !== ref.pt[ptr_sel[4:3]]) fail("pointer", {ptr_sel, ptr_rdata}, {ptr_sel, ref.pt[ptr_sel[4:3]]});
         // urgent: the reference's compare, with the words left now and the
-        // deadline (and scale) of the clock before, against the mark + 1
+        // deadline, scale and depth of the clock before, against the mark + 1
         rr = ref.rem[ref.req_layer];
-        lb = lbpp[2*ref.req_layer +: 2];
+        lb = prev_lb[2*ref.req_layer +: 2];
         if (ref.req_ent) wl = {4'd0, rr[1]} + {4'd0, rr[0]} + 5'd1 + ((lb == 2'd0) ? 5'd2 : (5'd1 << lb));
         else begin wl = 5'd1; for (i = 2; i < 10; i = i + 1) wl = wl + {4'd0, rr[i]}; end
         dlq = {1'b0, prev_dl[ref.req_layer]};
         if (ref.req_ent) dlq = (prev_dl[ref.req_layer] == 10'h3FF) ? 11'h3FF : dlq + ({5'd0, 6'd59} << prev_hs[2*ref.req_layer +: 2]);
         mark = 11'd17 + 11'd5 * {6'd0, wl};
         exp_urg = r_req && (dlq < mark);
-        if (c_urg !== exp_urg) fail("urgent", c_urg, exp_urg);
+        // Not in the line_go clock: the request dies on this edge, and the
+        // reference marks it with the new line's depth where the core keeps
+        // the group's own (revision 2)
+        if (!r_go && c_urg !== exp_urg) fail("urgent", c_urg, exp_urg);
         for (i = 0; i < 3; i = i + 1) prev_dl[i] = ref.dl[i];
         prev_hs = hscale;
+        prev_lb = lbpp;
         if (r_req) n_req = n_req + 1;
         if (exp_urg) n_urg = n_urg + 1;
         if (c_fill != 3'd0) n_fill = n_fill + 1;
@@ -278,7 +287,7 @@ module tb_lockz80;
 
     initial begin
         for (m = 0; m < 3; m = m + 1) begin tk_wait[m] = 0; prev_dl[m] = 10'h3FF; end
-        prev_hs = 0;
+        prev_hs = 0; prev_lb = 0;
         repeat (4) @(posedge clk);
         @(negedge clk) rst = 1'b0;
         repeat (`ifdef SHORT 20000 `else 600000 `endif) @(posedge clk);
