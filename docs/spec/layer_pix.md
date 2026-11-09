@@ -34,12 +34,12 @@ One layer's pixel side. It takes the layer's 16-pixel groups from its data regis
 | `active` | in | 1 | The layer shows on this line | Stable through the line |
 | `xs`, `xe` | in | 11, 11 | The window: pixels `xs` to `xe` − 1 | Stable through the line |
 | `pos0` | in | 4 | The first source pixel shown in the first group (fine scroll) | Stable through the line |
-| `transp` | in | 1 | Colour value 0 is transparent | Live: applies from the next pixel |
-| `palofs` | in | 4 | Palette offset: the top 4 bits of the index for a pixel of up to 4 bits | Live: applies from the next pixel |
+| `transp` | in | 1 | Colour value 0 is transparent | Live: applies from the next pixel. A raw crossing from the machine's clock (4.4) |
+| `palofs` | in | 4 | Palette offset: the top 4 bits of the index for a pixel of up to 4 bits | Live: applies from the next pixel. A raw crossing from the machine's clock (4.4) |
 | `tile` | in | 1 | With `TILES`: a tile layer, palette and priority from `attr` | Stable through the line |
 | `dat` | in | 128 | The 8 data registers, register 0 in bits 15–0 | Stable while full |
 | `attr` | in | 10 | With `TILES`: {PRI, PAL} of tile column 1 (bits 9–5) and column 0 (bits 4–0) | With `dat` |
-| `gset` | in | 8 | The group's settings: bit 0 `planar` (with `PLANAR`), bits 2–1 `lb` (chunky: log2 of the bits per pixel), bits 5–3 `planes` (with `PLANAR`: planes − 1), bits 7–6 `hs` (log2 of the horizontal scale) | With `dat` |
+| `gset` | in | 6 | The group's settings: bit 0 `planar` (with `PLANAR`), bits 3–1 `depth` (words a group − 1: planes − 1 for a planar group; for a chunky group 0, 1, 3 or 7, from which the unit takes log2 of the bits a pixel), bits 5–4 `hs` (log2 of the horizontal scale) | With `dat` |
 | `fill_t` | in | 1 | Toggles when a group is complete in the data registers | System clock |
 | `take_t` | out | 1 | Toggles when the unit takes a group into its shifters | `clk_pix` |
 | `opaque` | out | 1 | This pixel shows | `clk_pix`, one clock after the beam pixel |
@@ -52,7 +52,7 @@ One layer's pixel side. It takes the layer's 16-pixel groups from its data regis
 
 | Name | Default | Meaning | For example |
 |------|---------|---------|-------------|
-| `PLANAR` | 1 | 1: planar layers built (`gset`'s `planar` and `planes` used) | 0 in a machine with chunky layers only |
+| `PLANAR` | 1 | 1: planar layers built (`gset`'s `planar` used, its `depth` read as planes − 1) | 0 in a machine with chunky layers only |
 | `TILES` | 0 | 1: tile layers' palette and priority built (`tile`, `attr` used, `pri` driven) | 1 in a machine whose layer fetch reads tile maps |
 
 With a feature off, its inputs are not used and synthesis builds nothing for it.
@@ -82,7 +82,7 @@ For a tile layer, source pixels 0–7 of a group are tile column 0 and use `attr
 - "Full" is `fill_t` != `take_t`. `fill_t` crosses to the unit through two flip-flops on `clk_pix5`, so a new group is seen 2–3 fast clocks after `fill_t` toggles; the second flip-flop is then read on `clk_pix` as a related clock.
 - Taking a group copies all 8 data registers, `attr` and `gset` into the shifters and toggles `take_t`. The fetch side may then fill the next group.
 - The fetch side must not change `dat`, `attr` or `gset` while full.
-- From the take on, the group is shown with its own `gset`: its depth decides how its words are read, its `planar` flag which layout, its `hs` how many screen pixels each source pixel lasts. So a setting changed by software applies from the next group the fetch starts, never inside a group, and the fetch and the pixel side can never disagree about a group.
+- From the take on, the group is shown with its own `gset`: its `depth` decides how its words are read (chunky: 0, 1, 3 or 7 words → 1, 2, 4 or 8 bits a pixel), its `planar` flag which layout, its `hs` how many screen pixels each source pixel lasts. So a setting changed by software applies from the next group the fetch starts, never inside a group, and the fetch and the pixel side can never disagree about a group.
 
 ### 4.3 A line
 
@@ -98,9 +98,13 @@ Each output is registered: the pixel the beam is on in one clock (`hc`) comes ou
 
 A pixel is opaque when it is in the window, its group arrived, and not (`transp` and value 0). After an overrun the layer is transparent until the next group boundary, where the unit tries again; it counts to that boundary with the last taken group's `hs`, the only one it has.
 
-A scale that changes mid-line changes how many groups the window needs. The fetch's group count is fixed at the line's start (`layer_fetch` spec 4.1), so a line whose groups grow wider ends with groups unshown, and one whose groups shrink runs out early and is transparent to the window's end. Software that changes the scale mid-line accepts this.
+A scale that changes mid-line changes how many groups the window needs. The fetch's group count is fixed at the line's start (`layer_fetch` spec 4.1), so a line whose groups grow wider ends with groups unshown, and one whose groups shrink runs out early and is transparent to the window's end. Software that changes the scale mid-line accepts this. The fetch also works a group ahead: a write shows from the group after the one being fetched, one or two groups (16–32 source pixels) past where the beam was when it was written. A copper placing a split allows for that.
 
-### 4.4 Video off
+### 4.4 Live inputs
+
+`transp` and `palofs` are read raw, every pixel, straight from the machine's registers on its own clock: no synchroniser, by choice, so a copper can change them at any pixel. While the 4 bits of `palofs` change, one pixel can come out with a mix of the old and new bits. The machine constrains those paths as false paths (or synchronises them itself if it wants a clean change) and accepts the one pixel.
+
+### 4.5 Video off
 
 While `en` is low, `opaque` and `overrun_t` are 0 and `take_t` follows "full" in, so nothing is waiting when video comes back on.
 
@@ -109,7 +113,7 @@ While `en` is low, `opaque` and `overrun_t` are 0 and `take_t` follows "full" in
 The machine gives each layer a unit and:
 
 - A beam on the pixel clock: `hc`, `hn` and `line_start` one clock long at the start of the horizontal blank.
-- The line's settings (`active`, `xs`, `xe`, `pos0`, `tile`), worked out in the blank and held through the line; `transp` and `palofs` straight from its registers.
+- The line's settings (`active`, `xs`, `xe`, `pos0`, `tile`), worked out in the blank and held through the line; `transp` and `palofs` straight from its registers, with a false-path constraint on them (4.4).
 - The group's settings come with the group: `gset` from `layer_fetch`, which takes them at each group's start. The machine's depth, planar and scale registers feed the fetch, not this unit.
 - A layer fetch on the system clock, with 8 data registers per layer (and the tile attributes with `TILES`): `layer_fetch.v` (docs/spec/layer_fetch.md) does this. At the line's start it empties the handshake (sets `fill_t` to the `take_t` it sees, so a spare group from the last line is dropped) and fetches the line's first group; then it fills a group each time one is taken. It gives `ready` once it has restarted for the line, through a synchroniser.
 - A per-group deadline on its side: a group lasts 16 × 2^hs pixel clocks once the window has started.

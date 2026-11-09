@@ -19,7 +19,7 @@ It is retro68k's and retro-z80's `bpldma.v` made one core, with no registers a C
 | Memory | One requester on the scheduler: `req`, `urgent`, `addr`, `ack`, read data with `rvalid` |
 | Layer choice | Earliest deadline first; on a tie, round robin after the last layer served |
 | Urgent | Registered. Set when the asking layer's deadline is under a mark set by parameters |
-| To `layer_pix` | The data registers (`dat`), the tile attributes (`attr`), the group's own depth, planar flag and scale (`gset`), and a fill toggle per layer (`fill_t`, answered by `take_t`) |
+| To `layer_pix` | The data registers (`dat`), the tile attributes (`attr`), the group's own depth, planar flag and scale (`gset`, 6 bits), and a fill toggle per layer (`fill_t`, answered by `take_t`) |
 | Registers | No bus registers. Inside: pointers, line state, data registers |
 
 ## 2. Ports
@@ -42,9 +42,9 @@ Settings are read at one of three times:
 | `line_gen` | out | 1 | Toggles with `line_go` | – |
 | `act` | in | NL | The layer shows on the line about to be fetched | Copied at `line_go` |
 | `adv` | in | NL | Its pointers move on to the next source line after this line (else back to this line's start: a repeated line of a vertically scaled layer) | Copied at `line_go` |
-| `depth` | in | 3×NL | Words per group − 1: planes − 1 for a planar layer; for a chunky layer, bits a pixel − 1 as a word count (0, 1, 3 or 7) | Taken at a group's start, through a one-clock register (the same one as `dma_en`); live for the urgent count. A tile layer's rows are stored with the depth its pattern group took |
+| `depth` | in | 3×NL | Words per group − 1: planes − 1 for a planar layer; for a chunky layer, bits a pixel − 1 as a word count (0, 1, 3 or 7) | Taken at a group's start, through a one-clock register (the same one as `dma_en`). Read live for the urgent count, which is only an estimate: a change mid-line can make one urgent decision a little early or late, never corrupt a group. A tile layer's rows are stored with the depth its pattern group took |
 | `planar` | in | NL | `PLANAR`: the layer is planar, one pointer per plane | Taken at a group's start, as `depth` |
-| `hscale` | in | 2×NL | log2 of the horizontal scale. Sets how long a group lasts (4.4) | Taken at a group's start, as `depth`; the deadline uses the taken group's (and, for a map entry's deadline, the live value) |
+| `hscale` | in | 2×NL | log2 of the horizontal scale. Sets how long a group lasts (4.4) | Taken at a group's start, as `depth`; the deadline uses the taken group's. A map entry's deadline, a group further on, uses the live value: the next group hasn't started, so it has no taken value yet |
 | `wrap` | in | 4×NL | 0: no wrap. n: the layer's pointers wrap within an aligned block of 2^(n+9) bytes | Read live, on every pointer move |
 | `stride` | in | 16×NL | Signed byte stride from one source line's start to the next. Bit 0 is ignored | Read live, when each pointer's last word of the line is set up (4.8): a change mid-line applies at that line's end |
 | `ngroups` | in | 12×NL | Groups to fetch on the line (whole groups covering the window and fine scroll) | Copied at `line_go` |
@@ -65,7 +65,7 @@ Settings are read at one of three times:
 | `dat_rdata` | out | 16 | `DATWRITE`: the data register `dat_sel` names | Combinational from `dat_sel` |
 | `dat` | out | 128×NL | The data registers to `layer_pix`: layer n register r in bits 128n + 16r to 128n + 16r + 15 | Stable while the layer is full |
 | `attr` | out | 10×NL | `TILES`: the group's {PRI, PAL} for tile column 1 (bits 9–5) and column 0 (bits 4–0) | With `dat` |
-| `gset` | out | 8×NL | The group's settings for `layer_pix`, as taken at its start: bit 0 planar, bits 2–1 log2 of the bits a pixel, bits 5–3 planes − 1, bits 7–6 `hscale` (`layer_pix` spec, section 2) | With `dat` |
+| `gset` | out | 6×NL | The group's settings for `layer_pix`, as taken at its start: bit 0 `planar`, bits 3–1 `depth`, bits 5–4 `hscale` (`layer_pix` spec, section 2) | With `dat` |
 | `fill_t` | out | NL | Toggles when the layer's next group is complete in its data registers | – |
 | `take_t` | in | NL | From `layer_pix`: toggles when the layer's group is taken. Synchronised inside | Any |
 | `req` | out | 1 | Read one word. Held until `ack` | – |
