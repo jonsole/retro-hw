@@ -68,7 +68,7 @@ File: `rtl/copper_engine.v`.
 | `mem_rdata` | in | 16 | The word | With `mem_rvalid` |
 | `beam_v` | in | 11 | The beam's line, 0 to `VTOT` − 1, counting from the frame start | Any time |
 | `beam_h` | in | 11 | The beam's pixel, 0 to `HTOT` − 1 | Any time |
-| `blt_idle` | in | 1 | The DMA engine has nothing to do | Any time |
+| `blt_idle` | in | 1 | The blitter has nothing to do | Any time |
 
 ## 3. Parameters
 

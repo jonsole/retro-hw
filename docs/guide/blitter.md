@@ -1,6 +1,6 @@
-# Wiring in the DMA engine
+# Wiring in the blitter
 
-`dmx_core` is a blitter and DMA engine with four channels. It copies, fills, masks, adds and draws lines in memory, a word at a time, while the CPU gets on with something else. The spec is `docs/spec/dmx_core.md`. This guide is for someone putting it into a new machine.
+`blitter` is a blitter with four DMA channels. It copies, fills, masks, adds and draws lines in memory, a word at a time, while the CPU gets on with something else. The spec is `docs/spec/blitter.md`. This guide is for someone putting it into a new machine.
 
 ## What you write
 
@@ -17,7 +17,7 @@ The core has no registers. Your wrapper owns:
 An 8-bit machine with little-endian SRAM of 2 MB, no other port, no port jobs, LINE and EDGES built:
 
 ```verilog
-dmx_core #(.CHIP_WORDS(24'h100000), .LE(1), .MASKIMG(1), .XPORT(0), .PORTJOB(0),
+blitter #(.CHIP_WORDS(24'h100000), .LE(1), .MASKIMG(1), .XPORT(0), .PORTJOB(0),
            .LINE(1), .EDGES(1)) dma (
     .clk(clk), .rst(rst),
     .enable(dma_on), .pause(pause),

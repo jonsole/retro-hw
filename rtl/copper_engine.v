@@ -15,7 +15,7 @@
 //
 // What the engine does itself: the list pointers' use (start, frame
 // restart), jumps, skips, calls and returns (a stack of 8 places), WAIT on
-// the beam (with or without the DMA engine idle), STOP, errors, keeping list
+// the beam (with or without the blitter idle), STOP, errors, keeping list
 // 2's place over a frame start (resume) and the stack over it (stack_keep).
 // What the machine does: the registers, decoding the words, the register
 // write's address and data, an index register's step and the ALU (on more).
@@ -55,7 +55,7 @@ module copper_engine #(
     input  wire [10:0]   pos_line,     // WAIT and SKIP: the beam position
     input  wire [10:0]   pos_px,
     input  wire          pos_rel,      // ... pixel on this line (or the next)
-    input  wire          wait_blt,     // WAIT: and the DMA engine idle
+    input  wire          wait_blt,     // WAIT: and the blitter idle
     input  wire [3:0]    cc,           // SKIPC: the condition
     input  wire [2:0]    flags,        // SKIPC: C (2), N (1), Z (0)
     output wire          exec,         // the instruction runs this clock
@@ -79,7 +79,7 @@ module copper_engine #(
     input  wire          mem_rvalid,
     input  wire [15:0]   mem_rdata,
 
-    // The beam, and the DMA engine
+    // The beam, and the blitter
     input  wire [10:0]   beam_v,
     input  wire [10:0]   beam_h,
     input  wire          blt_idle

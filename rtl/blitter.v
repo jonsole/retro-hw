@@ -1,5 +1,5 @@
-// The DMA engine and blitter's engine (docs/spec/dmx_core.md): four
-// channels, their scheduler and one datapath. The machine's wrapper keeps
+// The blitter (docs/spec/blitter.md): four DMA channels, their
+// scheduler and one datapath. The machine's wrapper keeps
 // the registers: it holds the job registers, decodes the running channel's
 // job onto the job_ ports, stores loaded descriptors, and turns register
 // writes into the channel strobes.
@@ -61,7 +61,7 @@
 //
 // With PORTJOB set, a port job moves a byte at a time between a FIFO and
 // memory; a channel whose FIFO is not ready gives up its turn.
-module dmx_core #(
+module blitter #(
     parameter [23:0] CHIP_WORDS = 24'h200000,  // memory port: word addresses 0 to this - 1
     parameter        LE      = 0,              // 1: memory words little-endian
     parameter        MASKIMG = 1,              // 0: no 1 bpp mask image (MASK 1 is an error)
@@ -567,15 +567,15 @@ module dmx_core #(
     wire        job_end  = w_rows == 16'd0 && (mode[cur] == M_ROW || mode[cur] == M_SETUP);
     assign irq_set = ((es == S_SAVE) && (e_bad || (job_end && job_irq))) ? (4'd1 << cur) : 4'd0;
 
-`ifdef DMX_TRACE
+`ifdef BLITTER_TRACE
     reg [4:0] es_d;
     integer tclk = 0;
     always @(posedge clk) begin
         tclk = tclk + 1;
         es_d <= es;
-        if (es != es_d) $display("%0d dmx es %0d -> %0d cur %0d busy %b mode %0d rows %0d dleft %0d", tclk, es_d, es, cur, busy, mode[cur], w_rows, w_dleft);
-        if (xq_take) $display("%0d dmx take w %h we %b", tclk, xq_w, xq_we);
-        if (mem_ack) $display("%0d dmx ack", tclk);
+        if (es != es_d) $display("%0d blt es %0d -> %0d cur %0d busy %b mode %0d rows %0d dleft %0d", tclk, es_d, es, cur, busy, mode[cur], w_rows, w_dleft);
+        if (xq_take) $display("%0d blt take w %h we %b", tclk, xq_w, xq_we);
+        if (mem_ack) $display("%0d blt ack", tclk);
     end
 `endif
 

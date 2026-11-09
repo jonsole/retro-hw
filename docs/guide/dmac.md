@@ -67,7 +67,7 @@ The CPU (requester 0) asks in the clock before slot 0:
 
 ## Numbering the requesters
 
-The number is the priority. Put first those that suffer most from waiting: display fetches (they have deadlines), then audio, then the copper, then the CPU, then the DMA engine, and the test port last. A requester that must go ahead of lower numbers only sometimes uses `high` (rule 4) or a slot plan that makes it owner of a slot.
+The number is the priority. Put first those that suffer most from waiting: display fetches (they have deadlines), then audio, then the copper, then the CPU, then the blitter, and the test port last. A requester that must go ahead of lower numbers only sometimes uses `high` (rule 4) or a slot plan that makes it owner of a slot.
 
 ## Choosing a slot plan
 
