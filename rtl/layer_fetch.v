@@ -190,8 +190,6 @@ module layer_fetch #(
         end
         for (g = 0; g < NL; g = g + 1) begin : aout
             assign attr[10*g +: 10] = (TILES != 0) ? at[g] : 10'd0;
-            assign gset[6*g +: 6]   = {g_hs[g], g_dep[g], g_pl[g]};
-            assign newg[g]          = (rem[g] == 10'd0);
         end
     endgenerate
     assign dat_rdata = (DATWRITE != 0) ? dr[dat_sel] : 16'd0;
@@ -236,6 +234,14 @@ module layer_fetch #(
             e_pl[n]  = newg[n] ? rs_pl[n] : g_pl[n];
         end
     end
+    // Declared above, so the per-layer assigns come after (Icarus needs a
+    // signal declared before use)
+    generate
+        for (g = 0; g < NL; g = g + 1) begin : gout
+            assign gset[6*g +: 6] = {g_hs[g], g_dep[g], g_pl[g]};
+            assign newg[g]        = (rem[g] == 10'd0);
+        end
+    endgenerate
 
     // The registers a group fills (slots 9-2), and for a tile layer the
     // entries it reads (slots 1, 0): highest first
