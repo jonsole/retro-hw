@@ -109,9 +109,9 @@ module layer_fetch #(
     input  wire [15:0]       rdata
 );
     localparam PIW = (PLANAR != 0) ? LW + 3 : LW;     // a pointer's index: {layer, plane}, or the layer
-    localparam NP  = 1 << PIW;                         // pointers (a power of two, for the index width)
-    localparam DRN = 1 << (LW + 3);                    // data registers, likewise; 8 a layer are used
-    localparam ENN = 1 << (LW + 1);                    // tile entries, two a layer
+    localparam [31:0] NP  = 32'd1 << PIW;              // pointers (a power of two, for the index width)
+    localparam [31:0] DRN = 32'd1 << (LW + 3);         // data registers, likewise; 8 a layer are used
+    localparam [31:0] ENN = 32'd1 << (LW + 1);         // tile entries, two a layer
     localparam [9:0] DL_NONE = 10'h3FF;
     localparam [31:0]   LASTI = NL - 1;
     localparam [LW-1:0] LAST0 = LASTI[LW-1:0];           // the round robin starts at layer 0
@@ -346,6 +346,8 @@ module layer_fetch #(
     // ---------------------------------------------------------------- A: start a fetch
     reg           phase;                        // 0: A, 1: B
     reg           cu_act;                       // catch-up moves still to make (below)
+    reg  [NP-1:0] owe;                          // ... the pointers that owe their line-end move
+    reg  [NL-1:0] cu_adv;                       // ... and the adv of the line they belong to
     wire [PIW-1:0] c_sel;                       // ... the next pointer to move
     wire          a_go  = !rst && !phase && !line_go && !ptr_wr && !cu_act && |want && gmask != 10'd0;
     wire          a_cgo = !rst && !phase && !line_go && !ptr_wr && cu_act;  // A for a catch-up move
@@ -419,8 +421,6 @@ module layer_fetch #(
     // A and B of its own (a_cgo, b_cgo), lowest first, with the old line's
     // adv; stage A fetches nothing until they are done. A ptr_wr clears a
     // pointer's flag (its value stands) and, in B, sends the move back to A.
-    reg  [NP-1:0] owe;
-    reg  [NL-1:0] cu_adv;
     reg  [PIW-1:0] c_low;
     always @(*) begin : lowest
         integer q;
