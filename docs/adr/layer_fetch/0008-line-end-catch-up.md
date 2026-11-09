@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by 0009
 ---
 
 # A pointer that started a line always gets its line-end move

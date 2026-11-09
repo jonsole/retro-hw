@@ -3,13 +3,14 @@
 // tile layers, little-endian words, 22-bit pointers, the urgent mark one
 // cycle earlier. The same random settings, byte register writes, takes and
 // memory for both; every clock they must agree on dat, attr, fill_t, req,
-// addr, line_go, line_gen and the pointers. urgent is checked against the
+// addr, line_go and line_gen. urgent is checked against the
 // reference's compare made with the deadline of the clock before and the
 // mark + 1 (spec 4.4). Allowed differences (spec 6): line_t reaches the
 // reference a clock later (the core has one more synchroniser flop), the
 // pointers are loaded before the first line, depth and scale change only
-// in the line's first clock (the core takes them per group), and urgent is
-// not compared in the line_go clock.
+// in the line's first clock (the core takes them per group), urgent is not
+// compared in the line_go clock, and the core's line-end resets (revision
+// 4) are given to the reference as pointer writes and copies (below).
 //
 // The register-file side of retro-z80's bpldma (byte registers, the
 // pointer capture) is modelled here, as the machine's wrapper would.
@@ -67,9 +68,32 @@ module tb_lockz80;
     wire [20:0]  c_addr;
     wire [15:0]  dat_rdata;
 
+    // Revision 4: the core resets every pointer the ended line fetched at
+    // line_go, one a clock while its stage A waits; the reference moves a
+    // pointer at its last word instead. So the reference gets a same-value
+    // write of a pointer's middle byte in each clock of the core's resets (a
+    // pointer write holds its stage A too), and each pointer the core resets
+    // is copied into it (below). Both then start every line from the same
+    // pointers, and every address is compared; the pointers themselves
+    // differ between the reference's last word and line_go, so they are not
+    // compared (the line-end rule is tb_model's). The machine's own writes
+    // are held off while the resets run.
+    wire         cu_on     = dut.cu_act || dut.c_v;
+    wire [1:0]   cu_q      = dut.cu_q;
+    wire [21:0]  cu_old    = ref.pt[cu_q];
+    wire         ref_wr    = cu_on ? 1'b1 : rb_wr;
+    wire [12:0]  ref_addr  = cu_on ? 13'h1090 + {11'd0, cu_q} * 13'h20 + 13'h15 : rb_addr;
+    wire [7:0]   ref_wdata = cu_on ? cu_old[15:8] : rb_wdata;
+    integer      n_cu = 0, cp_q = -1;
+    always @(posedge clk) begin
+        cp_q = (dut.c2_go && dut.c_el && !dut.wrf[dut.c_q]) ? dut.c_q : -1;
+        if (cp_q >= 0) n_cu = n_cu + 1;
+    end
+    always @(negedge clk) if (cp_q >= 0) begin ref.pt[cp_q] = dut.pt[cp_q];  ref.svm[cp_q] = dut.pt[cp_q]; end
+
     bpldma_z80 #(.NL(3)) ref (
         .clk(clk), .rst(rst), .enable(enable),
-        .rb_rd(1'b0), .rb_wr(rb_wr), .rb_addr(rb_addr), .rb_wdata(rb_wdata), .rb_rdata(rb_rdata),
+        .rb_rd(1'b0), .rb_wr(ref_wr), .rb_addr(ref_addr), .rb_wdata(ref_wdata), .rb_rdata(rb_rdata),
         .rb_hit(rb_hit), .rb_cdata(rb_cdata), .rb_cap(rb_cap),
         .line_t(line_t_r), .act(act), .adv(adv), .lbpp(lbpp), .hscale(hscale), .wrap(wrap), .ngroups(ngroups),
         .tile(tile), .mapw(mapw), .ty(ty), .tcol(tcol),
@@ -213,8 +237,10 @@ module tb_lockz80;
                 if (r[7:0] == 8'd5) enable <= ~enable;
                 if (r[7:0] == 8'd7) begin j = {$random} % 3; tile[j] <= ~tile[j]; end
             end
-            // One byte register write a clock at most
-            if (r[12:8] == 5'd0)       write({$random} % 3, 5'h14 + ({$random} % 3), r[13] ? 8'hF0 | ({$random} % 16) : $random);
+            // One byte register write a clock at most, none while the core's
+            // line-end resets may run (above)
+            if (dut.line_go || dut.cu_act || dut.c_v) ;
+            else if (r[12:8] == 5'd0)       write({$random} % 3, 5'h14 + ({$random} % 3), r[13] ? 8'hF0 | ({$random} % 16) : $random);
             else if (r[12:8] == 5'd1)  write({$random} % 3, 5'h10 + ({$random} % 2), $random);
             else if (r[12:8] == 5'd2)  write({$random} % 3, 5'h18 + ({$random} % 3), $random);
             else if (r[12:8] == 5'd3)  write({$random} % 3, 5'h1C + ({$random} % 3), $random);
@@ -258,7 +284,6 @@ module tb_lockz80;
         if (c_fill !== r_fill) fail("fill_t", c_fill, r_fill);
         if (c_req !== r_req) fail("req", c_req, r_req);
         if (r_req && c_addr !== r_addr) fail("addr", c_addr, r_addr);
-        if (ptr_sel[4:3] != 2'd3 && ptr_rdata !== ref.pt[ptr_sel[4:3]]) fail("pointer", {ptr_sel, ptr_rdata}, {ptr_sel, ref.pt[ptr_sel[4:3]]});
         // urgent: the reference's compare, with the words left now and the
         // deadline, scale and depth of the clock before, against the mark + 1
         rr = ref.rem[ref.req_layer];
@@ -292,9 +317,9 @@ module tb_lockz80;
         @(negedge clk) rst = 1'b0;
         repeat (`ifdef SHORT 20000 `else 600000 `endif) @(posedge clk);
         @(negedge clk);
-        $display("%0d clocks, %0d lines: %0d requests (%0d tile, %0d entries, %0d flipped rows), %0d urgent, %0d full, %0d pointer bytes written",
-                 checks, line, n_req, n_tile, n_ent, n_flip, n_urg, n_fill, n_ptrw);
-        if (n_req < 1000 || n_urg == 0 || n_fill == 0 || n_ptrw == 0 || n_tile == 0 || n_ent == 0 || n_flip == 0) begin
+        $display("%0d clocks, %0d lines: %0d requests (%0d tile, %0d entries, %0d flipped rows), %0d urgent, %0d full, %0d pointer bytes written, %0d pointer resets copied",
+                 checks, line, n_req, n_tile, n_ent, n_flip, n_urg, n_fill, n_ptrw, n_cu);
+        if (n_req < 1000 || n_urg == 0 || n_fill == 0 || n_ptrw == 0 || n_tile == 0 || n_ent == 0 || n_flip == 0 || n_cu == 0) begin
             errors = errors + 1;
             $display("ERROR: a case never came up");
         end

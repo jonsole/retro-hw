@@ -7,17 +7,17 @@
 //   - each group that fills (fill_t toggles) must hold the words of the
 //     model's pointers, laid into the data registers as the spec says, and
 //     for a tile layer the rows the map entries pick (and attr);
-//   - at each line start, once the core's catch-up moves are made, every
-//     pointer that started the previous line must be at its start + stride
-//     if adv, else back at its start, within the wrap block, whether the
-//     line finished or not (revision 3): a finished line's move uses the
-//     stride and wrap of its last word, a catch-up move those of the new
-//     line; a tile layer's pointer does not move;
+//   - at each line start, once the core's line-end resets are made, every
+//     pointer the ended line fetched must be at its line start + stride if
+//     adv, else back at its line start, within the wrap block, whether the
+//     line was fetched to its end or not (revision 4): the stride is the one
+//     of the clock its reset is made in; every other pointer must not move;
 //   - lines are made short on purpose: a layer whose groups stop being
 //     taken (as when a scale made wider mid-line leaves groups owed), a
 //     memory that stops answering for the rest of a line, and (DATWRITE)
-//     dma_en cleared mid-line; and a pointer written just after line_go
-//     cancels its catch-up move;
+//     dma_en cleared mid-line (and now and then kept cleared through the
+//     line start, so the reset leaves that plane alone); and a pointer
+//     written just after line_go keeps the written value;
 //   - a stride written mid-line applies at that line's end; ngroups and
 //     act changed mid-line apply only from the next line;
 //   - depth and hscale written mid-line reach gset with some group of the
@@ -115,21 +115,19 @@ module tb_model;
     reg [2:0]    m_trow [0:NL-1];
     reg [PW-1:0] m_map  [0:NL-1], m_pat [0:NL-1];
     reg [11:0]   m_grp  [0:NL-1];        // groups filled so far this line
-    // The line end's pointer check, made once the core's catch-up is done
-    reg [PW-1:0] e_start [0:8*NL-1];     // each pointer's start on the line that ended
-    reg [PW-1:0] e_fin   [0:8*NL-1];     // ... where its own last word would have put it
-    reg [PW-1:0] e_fin2  [0:8*NL-1];     // ... the same with the stride and wrap at line_go: the last
-                                         // word set up after the toggle, which already sets them for the next line
-    integer      smode = 0;              // the line's way of ending short: 0 none, 1 stop taking, 2 starve, 3 dma_en
-    reg          e_chk   [0:8*NL-1];     // ... checked (a pointer the line used)
-    reg [1:0]    e_how   [0:8*NL-1];     // 0: finished, 1: started, maybe not finished, 2: maybe not started
-    reg          e_adv   [0:NL-1];       // the ended line's adv
+    // The line end's pointer check, made once the core's resets are done
+    reg [PW-1:0] m_sv    [0:8*NL-1];     // each pointer's line start, as the core keeps it
+    reg          e_used  [0:NL-1];       // the ended line: the layer had groups (not a tile layer)
+    reg          e_adv   [0:NL-1];       // ... its adv
+    reg [PW-1:0] e_gopt  [0:8*NL-1];     // each pointer at line_go
+    reg [15:0]   e_cstr  [0:8*NL-1];     // the stride in the clock each reset is made
     reg          e_pend = 0, e_seen = 0;
-    reg [NP_M-1:0] e_owe;                // the core's owed pointers at line_go
-    reg          cx_v = 0;               // a pointer written just after line_go, cancelling its move
-    reg [15:0]   e_cstr [0:NP_M-1];      // the stride in the clock each catch-up move is made
-    integer      cx_m;
+    integer      smode = 0;              // the line's way of ending short: 0 none, 1 stop taking, 2 starve, 3 dma_en
+    reg          cx_v = 0;               // a pointer written just after line_go: it keeps the written value
+    integer      cx_m, mi, el, pl_ok;
     reg [PW-1:0] cx_val;
+    reg          en_keep = 0;            // dma_en stays cleared through the line start (a planar plane)
+    reg [NL-1:0] nochk_next = 0;
     integer      stop_l = -1;            // a layer whose groups stop being taken this line
     reg [NL-1:0] nochk = 0;              // layers whose data aren't checked for the rest of the line
     reg [15:0]   m_ent0 [0:NL-1], m_ent1 [0:NL-1];   // the entries the next group uses
@@ -245,7 +243,7 @@ module tb_model;
     // ---------------------------------------------------------------- stimulus
     integer   cyc = 0, line = 0, lines_left = 0, line_len = 0, ptr_ld = 0, p;
     integer   errors = 0, n_groups = 0, n_tiles = 0, n_ptr_checks = 0, n_stride_mid = 0, n_unfinished = 0;
-    integer   n_caught = 0, n_cancel = 0, n_stop = 0, n_starve = 0, n_enclr = 0, q;
+    integer   n_caught = 0, n_cancel = 0, n_stop = 0, n_starve = 0, n_enclr = 0, n_enkeep = 0, n_left = 0, q;
     integer   n_set_mid = 0, n_set_new = 0, set_at = 0, set_layer = 0;
     reg       first_line = 1;
     reg [31:0] r;
@@ -261,18 +259,14 @@ module tb_model;
         ptr_wr <= 1'b0;
         if (!rst && ptr_ld == 0) begin
             // The line end's pointer check, once line_go is seen and the
-            // core's catch-up moves are made
+            // core's resets are made
             if (e_pend && dut.line_go) begin
-                e_seen = 1'b1;  e_owe = dut.owe;
-                for (n = 0; n < NL; n = n + 1)
-                    for (w = 0; w < 8; w = w + 1)
-                        e_fin2[8*n + w] = wrapadd(e_start[8*n + w],
-                                                  e_adv[n] ? {{(PW-16){stride[16*n + 15]}}, stride[16*n + 15 -: 15], 1'b0} : {PW{1'b0}},
-                                                  wrap[4*n +: 4]);
-                // Now and then a pointer written just after line_go: its
-                // catch-up move is cancelled and the written value stands
-                if (dut.owe != 0 && {$random} % 3 == 0) begin
-                    for (q = NP_M - 1; q >= 0; q = q - 1) if (dut.owe[q]) cx_m = q;
+                e_seen = 1'b1;
+                for (q = 0; q < NP_M; q = q + 1) e_gopt[(PLANAR != 0) ? q : 8*q] = dut.pt[q];
+                // Now and then a pointer written just after line_go: it
+                // keeps the written value
+                if ({$random} % 3 == 0) begin
+                    cx_m      = {$random} % ((PLANAR != 0) ? 8*NL : NL);
                     cx_val    = {$random} & {{(PW-1){1'b1}}, 1'b0};
                     ptr_wr   <= 1'b1;
                     ptr_sel  <= (PLANAR != 0) ? cx_m : cx_m << 3;
@@ -280,37 +274,37 @@ module tb_model;
                     cx_m = (PLANAR != 0) ? cx_m : 8*cx_m;
                     cx_v = 1'b1;
                 end
-            end else if (e_pend && e_seen && dut.b_cgo) begin
-                // A catch-up move is made in this clock: with the stride of now
-                e_cstr[dut.a_pi] = stride[16*((PLANAR != 0) ? dut.a_pi / 8 : dut.a_pi) +: 16];
-            end else if (e_pend && e_seen && !dut.cu_act) begin
+            end else if (e_pend && e_seen && (dut.cu_act || dut.c_v)) begin
+                // A reset may be made in this clock: the stride of now
+                if (dut.c2_go) e_cstr[(PLANAR != 0) ? dut.c_q : 8*dut.c_q] = stride[16*((PLANAR != 0) ? dut.c_q / 8 : dut.c_q) +: 16];
+            end else if (e_pend && e_seen) begin
                 e_pend = 1'b0;
                 for (n = 0; n < NL; n = n + 1)
-                    for (w = 0; w < 8; w = w + 1) if (e_chk[8*n + w]) begin
-                        q = (PLANAR != 0) ? 8*n + w : n;
-                        if (cx_v && cx_m == 8*n + w) begin
-                            m_pt[8*n + w] = cx_val;  n_cancel = n_cancel + 1;
-                        end else if (e_owe[q]) begin
-                            // A catch-up move: the stride of the clock it was made in, the new line's wrap
-                            if (e_how[8*n + w] == 2'd0 || e_how[8*n + w] == 2'd3)
-                                fail("owed, finished", n, {{(128-NP_M){1'b0}}, e_owe}, {126'd0, e_how[8*n + w]});
-                            m_pt[8*n + w] = wrapadd(e_start[8*n + w],
-                                                    e_adv[n] ? {{(PW-16){e_cstr[q][15]}}, e_cstr[q][15:1], 1'b0} : {PW{1'b0}},
-                                                    wrap[4*n +: 4]);
+                    for (w = 0; w < ((PLANAR != 0) ? 8 : 1); w = w + 1) begin
+                        mi = 8*n + w;
+                        q  = (PLANAR != 0) ? mi : n;
+                        // Fetched on the ended line: the layer had groups, the
+                        // plane is within its last group's depth (the core's
+                        // g_dep; the groups' gset are checked against the
+                        // model), and its dma_en bit is on now
+                        pl_ok = ((PLANAR != 0) && dut.g_pl[n]) ? (w <= dut.g_dep[n]) : (w == 0);
+                        el = e_used[n] && pl_ok && ((DATWRITE == 0) || dma_en[8*n + (((PLANAR != 0) && dut.g_pl[n]) ? w : 0)]);
+                        if (cx_v && cx_m == mi) begin
+                            m_pt[mi] = cx_val;  m_sv[mi] = cx_val;  n_cancel = n_cancel + 1;
+                        end else if (el) begin
+                            m_pt[mi] = wrapadd(m_sv[mi], e_adv[n] ? {{(PW-16){e_cstr[mi][15]}}, e_cstr[mi][15:1], 1'b0} : {PW{1'b0}},
+                                               wrap[4*n +: 4]);
+                            m_sv[mi] = m_pt[mi];
                             n_caught = n_caught + 1;
-                        end else case (e_how[8*n + w])
-                            // Not owed: its last word was set up, before the
-                            // toggle (all groups taken), or maybe after it
-                            2'd0:    m_pt[8*n + w] = e_fin[8*n + w];
-                            2'd1:    m_pt[8*n + w] = (dut.pt[q] == e_fin2[8*n + w]) ? e_fin2[8*n + w] : e_fin[8*n + w];
-                            2'd2:    m_pt[8*n + w] = (dut.pt[q] == e_fin[8*n + w])  ? e_fin[8*n + w]
-                                                   : (dut.pt[q] == e_fin2[8*n + w]) ? e_fin2[8*n + w] : e_start[8*n + w];
-                            default: m_pt[8*n + w] = e_start[8*n + w];        // not used: no move
-                        endcase
-                        if (dut.pt[q] !== m_pt[8*n + w]) fail("pointer", n, dut.pt[q], m_pt[8*n + w]);
-                        m_run[8*n + w] = m_pt[8*n + w];
+                        end else begin
+                            m_pt[mi] = e_gopt[mi];                       // left alone
+                            if (e_used[n] && pl_ok) n_left = n_left + 1;  // ... its dma_en bit off
+                        end
+                        if (dut.pt[q] !== m_pt[mi]) fail("pointer", n, dut.pt[q], m_pt[mi]);
+                        m_run[mi] = m_pt[mi];
                         n_ptr_checks = n_ptr_checks + 1;
                     end
+                if (en_keep) begin dma_en <= {8*NL{1'b1}};  en_keep = 1'b0; end
             end
         end
         if (!rst) begin
@@ -323,28 +317,20 @@ module tb_model;
                     ptr_sel   <= (PLANAR != 0) ? p : p << 3;
                     ptr_wdata <= (p * 22'h4C8C + 22'h2000) & 22'h3FFFFE;
                     m_pt[(PLANAR != 0) ? p : 8*p] = (p * 22'h4C8C + 22'h2000) & 22'h3FFFFE;
+                    m_sv[(PLANAR != 0) ? p : 8*p] = (p * 22'h4C8C + 22'h2000) & 22'h3FFFFE;
                 end
             end else if (lines_left == 0) begin
-                // The line ends: what each pointer the line used should come
-                // to, checked once the core's catch-up is done (below)
-                for (q = 0; q < 8*NL; q = q + 1) e_chk[q] = 1'b0;
+                // The line ends: checked once the core's resets are done (above)
                 if (!first_line)
                     for (n = 0; n < NL; n = n + 1) begin
-                        e_adv[n] = m_adv[n];
+                        e_adv[n]  = m_adv[n];
+                        e_used[n] = enable && m_act[n] && m_ngr[n] != 0 && !m_tile[n];
                         if (m_grp[n] < m_ngr[n] && m_act[n] && !m_tile[n]) n_unfinished = n_unfinished + 1;
-                        for (w = 0; w < ((PLANAR != 0) && m_planar[n] ? m_depth[n] + 1 : 1); w = w + 1) begin
-                            e_chk[8*n + w]   = 1'b1;
-                            e_start[8*n + w] = m_pt[8*n + w];
-                            e_fin[8*n + w]   = wrapadd(m_pt[8*n + w],
-                                                       m_adv[n] ? {{(PW-16){stride[16*n + 15]}}, stride[16*n + 15 -: 15], 1'b0} : {PW{1'b0}},
-                                                       wrap[4*n +: 4]);
-                            e_how[8*n + w]   = !(enable && m_act[n] && m_ngr[n] != 0 && !m_tile[n]) ? 2'd3
-                                             : (m_grp[n] == m_ngr[n] && !nochk[n]) ? 2'd0 : (m_grp[n] != 0) ? 2'd1 : 2'd2;
-                        end
                     end
                 e_pend = !first_line;  e_seen = 1'b0;  cx_v = 1'b0;
                 first_line <= 1'b0;
-                starve <= 1'b0;  nochk <= {NL{1'b0}};  dma_en <= {8*NL{1'b1}};
+                starve <= 1'b0;  nochk <= nochk_next;  nochk_next = {NL{1'b0}};
+                if (!en_keep) dma_en <= {8*NL{1'b1}};
                 // The next line's settings, in place before its line_go
                 line_t <= ~line_t;
                 line_len = 800 + ({$random} % 400);
@@ -419,6 +405,9 @@ module tb_model;
                         if (m_planar[n]) dma_en[8*n + ({$random} % (m_depth[n] + 1))] <= 1'b0;
                         else             dma_en[8*n +: 8] <= 8'h00;
                         nochk[n] <= 1'b1;  n_enclr = n_enclr + 1;
+                        if (m_planar[n] && {$random} % 2 == 0) begin           // kept cleared through the line start
+                            en_keep = 1'b1;  nochk_next[n] = 1'b1;  n_enkeep = n_enkeep + 1;
+                        end
                     end
                 end
                 if (lines_left == 250) begin
@@ -461,10 +450,10 @@ module tb_model;
         @(negedge clk);
         $display("NL=%0d PLANAR=%0d TILES=%0d LITTLE=%0d DATWRITE=%0d: %0d lines, %0d groups checked (%0d tile), %0d pointer checks, %0d mid-line strides, %0d mid-line settings (%0d reached a group)",
                  NL, PLANAR, TILES, LITTLE, DATWRITE, line, n_groups, n_tiles, n_ptr_checks, n_stride_mid, n_set_mid, n_set_new);
-        $display("  short lines: %0d layer-lines unfinished (%0d stopped taking, %0d starved, %0d dma_en cleared), %0d catch-up moves checked, %0d cancelled by a write",
-                 n_unfinished, n_stop, n_starve, n_enclr, n_caught, n_cancel);
+        $display("  short lines: %0d layer-lines unfinished (%0d stopped taking, %0d starved, %0d dma_en cleared, %0d kept cleared); %0d resets checked, %0d planes left alone, %0d pointers written after line_go",
+                 n_unfinished, n_stop, n_starve, n_enclr, n_enkeep, n_caught, n_left, n_cancel);
         if (n_groups < 200 || n_ptr_checks < 50 || ((TILES != 0) && n_tiles == 0) || n_set_new < 10
-            || n_caught < 10 || n_cancel < 3 || ((DATWRITE != 0) && n_enclr < 5)) begin
+            || n_caught < 50 || n_cancel < 10 || ((DATWRITE != 0) && (n_enclr < 5 || n_left < 2))) begin
             errors = errors + 1;
             $display("ERROR: a case never came up, or too many lines ran out");
         end

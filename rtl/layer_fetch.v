@@ -20,16 +20,12 @@
 //
 // Line by line: line_t (from the pixel clock) toggles at the start of each
 // horizontal blank; two clocks later line_go starts the next line's fetch.
-// Each word read moves its pointer on by 2. The first word a pointer gives
-// on a line saves the pointer (the line's start); the last sets it to that
-// start + stride, or back to the start on a repeated line.
-//
-// A pointer that gave its first word on a line but not its last (a scale
-// made wider mid-line, a starved fetch, dma_en cleared) owes its line-end
-// move: from line_go stages A and B move the owed pointers, two clocks
-// each and with no request, to their saved start (+ stride if that line's
-// adv) before the new line's first group is set up. Judged per pointer, so
-// a plane that gave no word is left alone.
+// Each word read moves its pointer on by 2; nothing counts the words. At
+// each line_go the line ends: every pointer the ended line fetched is
+// reset, one a clock, to its line start + stride (or back to the start on a
+// repeated line), which is also the next line's start, before the new
+// line's first group is set up. So how much of a line was fetched never
+// matters to where the next one starts.
 //
 // A group's depth, planar flag and scale are taken as it starts (stage A
 // of its first word), from a one-clock register of the settings, and go
@@ -205,7 +201,6 @@ module layer_fetch #(
     // ---------------------------------------------------------------- line state
     reg  [11:0]   left [0:NL-1];               // groups still to start
     reg  [11:0]   ngr  [0:NL-1];               // groups to fetch on this line
-    reg  [NL-1:0] firstg, lastg;               // the group being fetched is the line's first, last
     reg  [9:0]    rem  [0:NL-1];               // slots of the current group still to ask for
     reg  [NL-1:0] busy;                        // a group is on its way (until its last word arrives)
     reg  [NL-1:0] pv_adv;                      // the line's pointers move on after it
@@ -328,14 +323,6 @@ module layer_fetch #(
 
     assign ptr_rdata = pt[wi];
 
-    // The line's first and last words from a pointer: a planar plane's
-    // first word of the first group and last of the last; a chunky layer's
-    // first word of its first group and last word of its last
-    wire          first_g = gstart ? (left[pick] == ngr[pick]) : firstg[pick];
-    wire          last_g  = gstart ? (left[pick] == 12'd1)     : lastg[pick];
-    wire          first_w = first_g && (perpl || gstart);
-    wire          last_w  = last_g  && (perpl || rem_n == 10'd0);
-
     // Tiles: the column a pattern slot belongs to, and which word of its row
     wire [1:0]    lbp     = e_lb[pick];
     wire [2:0]    kcol    = (lbp == 2'd0) ? 3'd1 : 3'd1 << (lbp - 1'b1);
@@ -346,20 +333,15 @@ module layer_fetch #(
 
     // ---------------------------------------------------------------- A: start a fetch
     reg           phase;                        // 0: A, 1: B
-    reg           cu_act;                       // catch-up moves still to make (below)
-    reg  [NP-1:0] owe;                          // ... the pointers that owe their line-end move
-    reg  [NL-1:0] cu_adv;                       // ... and the adv of the line they belong to
-    wire [PIW-1:0] c_sel;                       // ... the next pointer to move
-    wire          a_go  = !rst && !phase && !line_go && !ptr_wr && !cu_act && |want && gmask != 10'd0;
-    wire          a_cgo = !rst && !phase && !line_go && !ptr_wr && cu_act;  // A for a catch-up move
-    reg           a_cu;                         // B finishes a catch-up move, not a fetch
+    reg           cu_act, c_v;                  // the line-end resets are being made (below)
+    wire          a_go  = !rst && !phase && !line_go && !ptr_wr && !cu_act && !c_v && |want && gmask != 10'd0;
     reg  [LW-1:0] a_pick;
     reg  [3:0]    a_slot;
     reg  [PIW-1:0] a_pi;
-    reg           a_gstart, a_first_w, a_last_w, a_fill, a_col, a_flip;
+    reg           a_gstart, a_fill, a_col, a_flip;
     reg  [9:0]    a_rem_n;
     reg  [2:0]    a_j;
-    reg  [PW-1:0] a_pt, a_sv;
+    reg  [PW-1:0] a_pt;
     // The settings a group takes as it starts. Each register has one
     // always block, its reset included: two blocks driving one register
     // simulate fine but do not synthesise (drivers.sh checks it)
@@ -373,28 +355,13 @@ module layer_fetch #(
             g_pl[pick]  <= rs_pl[pick];
         end
     end
-    // A catch-up move is a line's last word without a request: B writes
-    // the saved start (+ stride) and nothing else
-    wire [PIW-1:0] sv_i   = cu_act ? c_sel : pi;
-    wire [LW-1:0]  c_lay  = (PLANAR != 0) ? c_sel[PIW-1:PIW-LW] : c_sel[LW-1:0];
-    always @(posedge clk) if (a_go || a_cgo) begin
-        a_cu      <= a_cgo;
-        a_sv      <= svm[sv_i];
-    end
-    always @(posedge clk) if (a_cgo) begin                         // a catch-up move (a_go is low)
-        a_pick    <= c_lay;
-        a_pi      <= c_sel;
-        a_first_w <= 1'b0;
-        a_last_w  <= 1'b1;
-    end else if (a_go) begin
+    always @(posedge clk) if (a_go) begin
         a_pick    <= pick;
         a_slot    <= sl_n;
         a_pi      <= pi;
         a_gstart  <= gstart;
         a_rem_n   <= rem_n;
         a_fill    <= (sl_n >= 4'd2) && (rem_n[9:2] == 8'd0);        // the group's last pattern word
-        a_first_w <= first_w;
-        a_last_w  <= last_w;
         a_pt      <= pt[pi];
         a_col     <= (sl_n >= 4'd2) ? pcol : !sl_n[0];              // an entry: slot 1 column 0, slot 0 column 1
         a_flip    <= pflip;
@@ -408,70 +375,78 @@ module layer_fetch #(
     reg           nxt_fill, nxt_last, nxt_gen, nxt_flip, nxt_bsel;
     reg  [AW-1:0] nxt_addr;
     wire          b_abort = line_go || ptr_wr;
-    wire          b_cgo   = !rst && phase && !b_abort && a_cu;         // B of a catch-up move
-    wire          b_go    = !rst && phase && !b_abort && !a_cu && !(req && !ack && nxt_v)
+    wire          b_go    = !rst && phase && !b_abort && !(req && !ack && nxt_v)
                             && (!a_gstart || left[a_pick] != 12'd0);
     wire          a_tile  = (TILES != 0) && t_tile[a_pick];
     wire          a_ent   = (TILES != 0) && (a_slot < 4'd2);
-    wire [PW-1:0] start   = a_first_w ? a_pt : a_sv;                // this line's start
-    wire [15:0]   a_mod   = stride[16*a_pick +: 16];
-    wire          a_adv   = a_cu ? cu_adv[a_pick] : pv_adv[a_pick];     // a catch-up move: the old line's
-    wire [PW-1:0] a_str   = a_adv ? {{(PW-16){a_mod[15]}}, a_mod[15:1], 1'b0} : {PW{1'b0}};
-    wire [PW-1:0] a_wm    = wmask_of(wrap[4*a_pick +: 4]);
-    wire [PW-1:0] pt_next = a_last_w ? wadd(start, a_str, a_wm) : wadd(a_pt, {{(PW-2){1'b0}}, 2'd2}, a_wm);
+    wire [PW-1:0] pt_next = wadd(a_pt, {{(PW-2){1'b0}}, 2'd2}, wmask_of(wrap[4*a_pick +: 4]));
     wire [PW-1:0] prow    = pn[{a_pick, a_col}];
     wire [PW-1:0] b_addr  = !a_tile ? a_pt : a_ent ? eaddr[a_pick] : prow + {{(PW-4){1'b0}}, a_j, 1'b0};
     wire          b_bsel  = prow[0];
 
-    // ---------------------------------------------------------------- catch-up
-    // owe: the pointer gave its first word on this line and not yet its last.
-    // From line_go, while any are left (cu_act), each is moved in turn by an
-    // A and B of its own (a_cgo, b_cgo), lowest first, with the old line's
-    // adv; stage A fetches nothing until they are done. A ptr_wr clears a
-    // pointer's flag (its value stands) and, in B, sends the move back to A.
-    reg  [PIW-1:0] c_low;
-    always @(*) begin : lowest
-        integer q;
-        c_low = {PIW{1'b0}};
-        // Only pointers that exist: a padded index (a layer number NL or
-        // more) would build the per-layer selection for layers there aren't
-        for (q = NPV - 1; q >= 0; q = q - 1) if (owe[q]) c_low = q[PIW-1:0];
-    end
-    assign c_sel = c_low;
-    wire [NP-1:0] one_wi  = {{(NP-1){1'b0}}, 1'b1} << wi;
-    wire [NP-1:0] one_api = {{(NP-1){1'b0}}, 1'b1} << a_pi;
-    wire [NP-1:0] owe_cu  = owe & ~(ptr_wr ? one_wi : {NP{1'b0}}) & ~(b_cgo ? one_api : {NP{1'b0}});
+    // ---------------------------------------------------------------- line-end reset
+    // From line_go, every pointer there is (cu_q from 0) is looked at in
+    // turn: C1 reads its line start and whether the ended line fetched it,
+    // C2 writes start (+ stride if that line's adv) to the pointer and its
+    // line start. One a clock; a ptr_wr holds C1 and C2 for its clock (the
+    // write port is the machine's), and a pointer written since line_go
+    // keeps the written value (wrf).
+    reg  [NL-1:0] cu_had, cu_adv;               // the ended line: the layer fetched, its adv
+    reg  [PIW-1:0] cu_q, c_q;
+    reg  [PW-1:0] c_sv;
+    reg           c_el;
+    reg  [NP-1:0] wrf;                          // written since line_go
+    wire [LW-1:0] q_l    = (PLANAR != 0) ? cu_q[PIW-1:PIW-LW] : cu_q[LW-1:0];
+    wire [8*(1<<LW):0] dma_ex = {{(8*((1<<LW)-NL)+1){1'b0}}, dma_en};  // padded past the index range
+    wire [PIW+2:0] cu_qx = {3'd0, cu_q};                            // (wide enough for the plane in any build)
+    wire [2:0]    q_p    = (PLANAR != 0) ? cu_qx[2:0] : 3'd0;
+    wire          q_pl   = (PLANAR != 0) && g_pl[q_l];               // the layer's last group: planar
+    wire          q_el   = cu_had[q_l] && (q_pl ? q_p <= g_dep[q_l] : q_p == 3'd0)
+                           && ((DATWRITE == 0) || dma_ex[{1'b0, q_l, q_pl ? q_p : 3'd0}]);
+    wire [LW-1:0] c_l    = (PLANAR != 0) ? c_q[PIW-1:PIW-LW] : c_q[LW-1:0];
+    wire [15:0]   c_mod  = stride[16*c_l +: 16];
+    wire [PW-1:0] c_next = wadd(c_sv, cu_adv[c_l] ? {{(PW-16){c_mod[15]}}, c_mod[15:1], 1'b0} : {PW{1'b0}},
+                                wmask_of(wrap[4*c_l +: 4]));
+    wire          c2_go  = c_v && !ptr_wr;
+    wire          c1_go  = cu_act && !ptr_wr && (!c_v || c2_go);
+    wire          cu_last = ({{(32-PIW){1'b0}}, cu_q} == NPV - 32'd1);   // the last pointer there is
 
     always @(posedge clk) begin
+        if (c1_go) begin
+            c_q  <= cu_q;
+            c_sv <= svm[cu_q];
+            c_el <= q_el;
+        end
         if (rst) begin
-            owe <= {NP{1'b0}};  cu_act <= 1'b0;  cu_adv <= {NL{1'b0}};
+            cu_act <= 1'b0;  c_v <= 1'b0;  wrf <= {NP{1'b0}};  cu_q <= {PIW{1'b0}};
+            cu_had <= {NL{1'b0}};  cu_adv <= {NL{1'b0}};
         end else if (line_go) begin
-            owe    <= owe_cu;
-            cu_act <= owe_cu != {NP{1'b0}};
-            cu_adv <= pv_adv;                                       // the old line's
-        end else if (cu_act) begin
-            owe    <= owe_cu;
-            cu_act <= owe_cu != {NP{1'b0}};
+            cu_act <= 1'b1;  c_v <= 1'b0;  cu_q <= {PIW{1'b0}};
+            wrf    <= ptr_wr ? {{(NP-1){1'b0}}, 1'b1} << wi : {NP{1'b0}};
+            for (n = 0; n < NL; n = n + 1) cu_had[n] <= (ngr[n] != 12'd0) && !t_tile[n];
+            cu_adv <= pv_adv;                                       // the ended line's
         end else begin
-            if (b_go && !a_tile) begin
-                if (a_last_w)       owe[a_pi] <= 1'b0;
-                else if (a_first_w) owe[a_pi] <= 1'b1;
+            if (ptr_wr) wrf[wi] <= 1'b1;
+            if (c1_go) begin
+                if (cu_last) cu_act <= 1'b0;
+                else         cu_q   <= cu_q + 1'b1;
             end
-            if (ptr_wr) owe[wi] <= 1'b0;
+            if (c1_go)      c_v <= 1'b1;
+            else if (c2_go) c_v <= 1'b0;
         end
     end
 
-    // The pointer: a write from the machine wins over the fetch's own move
-    // and sets the saved start too. A tile layer leaves its pointer alone.
+    // The pointer: a write from the machine wins over the fetch's own moves
+    // and sets the line start too. A tile layer leaves its pointer alone.
     always @(posedge clk) begin
         if (ptr_wr) begin
             pt[wi]  <= {ptr_wdata[PW-1:1], 1'b0};
             svm[wi] <= {ptr_wdata[PW-1:1], 1'b0};
-        end else if (b_cgo) begin
-            pt[a_pi] <= pt_next;                                    // start = the saved start (a_first_w 0)
+        end else if (c2_go && c_el && !wrf[c_q]) begin
+            pt[c_q]  <= c_next;
+            svm[c_q] <= c_next;
         end else if (b_go && !a_tile) begin
             pt[a_pi] <= pt_next;
-            if (a_first_w) svm[a_pi] <= a_pt;
         end
     end
 
@@ -490,8 +465,8 @@ module layer_fetch #(
                         : (rem[n] != 10'd0) || (left[n] != 12'd0 && !busy[n] && !full[n] && gmask_l[n] != 10'd0));
         end
         if (rst || line_go)       phase <= 1'b0;
-        else if (a_go || a_cgo)   phase <= 1'b1;
-        else if (b_go || b_cgo || b_abort) phase <= 1'b0;
+        else if (a_go)            phase <= 1'b1;
+        else if (b_go || b_abort) phase <= 1'b0;
     end
 
     // Tiles: the map row's address, the next entry's, and each column's pattern row
@@ -585,7 +560,6 @@ module layer_fetch #(
             busy   <= {NL{1'b0}};
             nxt_v  <= 1'b0;
             pv_adv <= {NL{1'b0}};
-            firstg <= {NL{1'b0}};  lastg <= {NL{1'b0}};
             t_tile <= {NL{1'b0}};
             first_take <= {NL{1'b0}};
             for (n = 0; n < NL; n = n + 1) begin
@@ -671,8 +645,6 @@ module layer_fetch #(
                     rem[a_pick] <= a_rem_n;
                     if (a_gstart) begin
                         left[a_pick]   <= left[a_pick] - 1'b1;
-                        firstg[a_pick] <= (left[a_pick] == ngr[a_pick]);
-                        lastg[a_pick]  <= (left[a_pick] == 12'd1);
                         busy[a_pick]   <= 1'b1;
                         if (a_tile && !a_ent)                                        // the group's PAL and PRI
                             at[a_pick] <= {ent[{a_pick, 1'b1}][15], ent[{a_pick, 1'b1}][12:9],

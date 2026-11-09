@@ -1,0 +1,7 @@
+---
+status: proposed
+---
+
+# The pointers are reset at the line end; nothing counts words
+
+Revisions 1 to 3 moved a pointer to its line start + stride with the line's last word, which meant counting groups and words to know which word was last, saving the start at the first word, and (revision 3) a flag per pointer and a catch-up at `line_go` for lines that ended before their last word. Jon asked for the simple rule instead: a pointer just counts on as words are read, and at each `line_go` every pointer the ended line fetched is reset to its line start + stride (or back to the start on a repeated line), which is also the next line's start. Stride stays start-to-start, so vertical scaling and a mid-line scale change need nothing more from software. The resets are made one pointer a clock at the start of the blank (up to 25 clocks for retro68k's 24 pointers), every line; in exchange the first- and last-word logic and the catch-up go, and the core is about as small as revision 1. Which pointers the ended line fetched is judged from the layer having had groups, the depth of its last group and the `dma_en` bit at the reset, so a plane that is not fetched does not creep by the stride. A pointer written from `line_go` on keeps the written value (a flag a pointer for the blank). The frozen reference fetches still move pointers at the last word, so the lockstep rigs copy the core's resets into them and compare addresses, not pointers.

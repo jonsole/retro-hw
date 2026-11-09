@@ -1,16 +1,17 @@
 `timescale 1ns/1ps
 // layer_fetch in lockstep with retro68k's bpldma.v (ref/bpldma_68k.v):
 // the same random line settings, register writes, takes and memory, and
-// every clock the two must agree on dat, fill_t, req, addr, line_go,
-// line_gen and every pointer. urgent is checked against the reference's
+// every clock the two must agree on dat, fill_t, req, addr, line_go
+// and line_gen. urgent is checked against the reference's
 // compare made with the deadline of the clock before and the mark + 1
 // (spec 4.4). Allowed differences (spec 6): line_t reaches the reference
 // a clock later, as the core has one more synchroniser flop; the core has
 // no restart on a BPLDMA write, so those are made only in line_go clocks;
 // pointers are loaded before the first line; depth, planar and scale
 // change only in the line's first clock (the core takes them per group);
-// the core's catch-up moves after a short line (revision 3) are given to
-// the reference as pointer writes in the same clocks.
+// the core's line-end resets (revision 4) are given to the reference as
+// pointer writes and copies in the same clocks, and the pointers are not
+// compared (the reference moves them at the last word, the core at line_go).
 //
 // The register-file side of retro68k's bpldma (byte merging, BPLDMA's
 // set/clear, BPLSTRIDE) is modelled here, as the machine's wrapper would.
@@ -59,25 +60,29 @@ module tb_lock68k;
 
     wire         r_go, r_gen, r_req, r_urg, c_go, c_gen, c_req, c_urg;
 
-    // Revision 3: the core makes the line-end move of a pointer that started
-    // a line without finishing it, at the next line_go, through its stages A
-    // and B, before any fetch. The reference doesn't, so it gets the same moves as
-    // pointer writes on its bus in the same clocks (a write holds its stage A
-    // too): a same-value write in each catch-up A clock, and each pointer's
-    // new value in the B clock where the core writes it. Only the reference's saved
-    // starts differ after, and the next line's first words overwrite them.
-    // The machine's own writes are held off while this runs.
-    wire [4:0]   cu_q    = dut.b_cgo ? dut.a_pi : dut.c_sel;
+    // Revision 4: the core resets every pointer the ended line fetched at
+    // line_go, one a clock while its stage A waits; the reference moves a
+    // pointer at its last word instead. So the reference gets a same-value
+    // pointer write on its bus in each clock of the core's resets (a write
+    // holds its stage A too), and each pointer the core resets is copied
+    // into it (below). Both then start every line from the same pointers,
+    // and every address is compared; the pointers themselves differ between
+    // the reference's last word and line_go, so they are not compared (the
+    // line-end rule is tb_model's). The machine's own writes are held off
+    // while the resets run.
+    wire         cu_on   = dut.cu_act || dut.c_v;
+    wire [4:0]   cu_q    = dut.cu_q;
     wire [23:0]  cu_ra   = 24'hE00100 + {19'd0, cu_q[4:3]} * 24'h80 + 24'h20 + {21'd0, cu_q[2:0]} * 24'h4;
-    wire         ref_wr    = dut.cu_act ? 1'b1 : rb_wr;
-    wire [23:2]  ref_addr  = dut.cu_act ? cu_ra[23:2] : rb_addr;
-    wire [31:0]  ref_wdata = dut.cu_act ? {9'd0, dut.b_cgo ? dut.pt_next : ref.pt[cu_q]} : rb_wdata;
-    wire [3:0]   ref_be    = dut.cu_act ? 4'b0111 : rb_be;
-    integer      n_cu = 0, n_cul = 0;
+    wire         ref_wr    = cu_on ? 1'b1 : rb_wr;
+    wire [23:2]  ref_addr  = cu_on ? cu_ra[23:2] : rb_addr;
+    wire [31:0]  ref_wdata = cu_on ? {9'd0, ref.pt[cu_q]} : rb_wdata;
+    wire [3:0]   ref_be    = cu_on ? 4'b0111 : rb_be;
+    integer      n_cu = 0, cp_q = -1;
     always @(posedge clk) begin
-        if (dut.b_cgo) n_cu = n_cu + 1;
-        if (dut.line_go && dut.owe != 0) n_cul = n_cul + 1;
+        cp_q = (dut.c2_go && dut.c_el && !dut.wrf[dut.c_q]) ? dut.c_q : -1;
+        if (cp_q >= 0) n_cu = n_cu + 1;
     end
+    always @(negedge clk) if (cp_q >= 0) begin ref.pt[cp_q] = dut.pt[cp_q];  ref.svm[cp_q] = dut.pt[cp_q]; end
     wire [9:0]   r_dl;
     wire [383:0] r_dat, c_dat;
     wire [2:0]   r_fill, c_fill;
@@ -244,8 +249,8 @@ module tb_lock68k;
                 if (r[7:0] == 8'd5) enable <= ~enable;
             end
             // Register writes: one a clock at most. BPLDMA only in the line_go
-            // clock. None while the core's catch-up moves may run (above).
-            if (dut.line_go || dut.cu_act) ;
+            // clock. None while the core's line-end resets may run (above).
+            if (dut.line_go || dut.cu_act || dut.c_v) ;
             else if (dma_pending && r[9:8] != 2'd0)
                 write(2'd2, {$random} % 3, 3'd0, {$random} & 32'h0000_80FF, 4'b0011);
             else if (!dma_pending && r[12:8] == 5'd0)                                // a whole pointer, often just below a wrap block's end
@@ -291,7 +296,6 @@ module tb_lock68k;
         if (c_fill !== r_fill) fail("fill_t", c_fill, r_fill);
         if (c_req !== r_req) fail("req", c_req, r_req);
         if (r_req && c_addr !== r_addr) fail("addr", c_addr, r_addr);
-        if (ptr_sel < 5'd24 && ptr_rdata !== ref.pt[ptr_sel]) fail("pointer", {ptr_sel, ptr_rdata}, {ptr_sel, ref.pt[ptr_sel]});
         if (dat_sel < 5'd24 && dat_rdata !== ref.dr[dat_sel]) fail("dat_rdata", dat_rdata, ref.dr[dat_sel]);
         // urgent: the reference's compare, with the words left now and the
         // deadline of the clock before, against the mark + 1
@@ -315,9 +319,9 @@ module tb_lock68k;
         @(negedge clk) rst = 1'b0;
         repeat (`ifdef SHORT 20000 `else 600000 `endif) @(posedge clk);
         @(negedge clk);
-        $display("%0d clocks, %0d lines: %0d requests, %0d urgent, %0d full, %0d pointer writes, %0d data writes (%0d completing a group), %0d line starts with catch-up moves (%0d pointers)",
-                 checks, line, n_req, n_urg, n_fill, n_ptrw, n_datw, n_datfill, n_cul, n_cu);
-        if (n_req < 1000 || n_urg == 0 || n_fill == 0 || n_ptrw == 0 || n_datw == 0 || n_datfill == 0 || n_cul == 0) begin
+        $display("%0d clocks, %0d lines: %0d requests, %0d urgent, %0d full, %0d pointer writes, %0d data writes (%0d completing a group), %0d pointer resets copied",
+                 checks, line, n_req, n_urg, n_fill, n_ptrw, n_datw, n_datfill, n_cu);
+        if (n_req < 1000 || n_urg == 0 || n_fill == 0 || n_ptrw == 0 || n_datw == 0 || n_datfill == 0 || n_cu == 0) begin
             errors = errors + 1;
             $display("ERROR: a case never came up");
         end
