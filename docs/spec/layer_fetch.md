@@ -1,6 +1,6 @@
 # Layer fetch (layer_fetch)
 
-Status: **draft**, revision 2: a group's depth, planar flag and scale are taken at the group's start and travel with it to `layer_pix` (`gset`). Agreed by both machines (retro68k #34, retro-z80 design plan branch 26) and implemented (`rtl/layer_fetch.v`, PR #9); retro-z80 runs revision 1. To be locked together with `layer_pix` once both machines have adopted it.
+Status: **locked**, revision 2 (9 November 2026): a group's depth, planar flag and scale are taken at the group's start and travel with it to `layer_pix` (`gset`). Agreed by both machines (retro68k #34, retro-z80 design plan branch 26) and implemented (`rtl/layer_fetch.v`, PR #9). Changes from here are a revision 3, by request from a machine.
 
 The layer fetch reads each layer's words from memory, one 16-pixel group at a time, into the layer's data registers, where `layer_pix.v` takes them. It is one requester on the memory scheduler (`dmac.v`) for all its layers, and picks which layer asks next by earliest deadline. It counts each layer's pointer on as it reads, and moves it to the next line's start at the end of a line.
 
@@ -128,7 +128,7 @@ So how many words a line reads (whole groups, fine scroll) never matters to wher
 Each layer has a deadline: system clocks until the group it took last is used up, so the next one must be in by then.
 
 - At `line_go` every deadline is none (10'h3FF).
-- When `layer_pix` takes a group (seen when the take toggle has passed its synchroniser, about 3 clocks after `take_t` toggles), the deadline loads 59 × 2^hs clocks, hs the `hscale` that group took at its start (the value in its `gset`), (a group of 16 source pixels at about 3.7 system clocks a screen pixel; a tile group is 16 source pixels too), except for the line's first take, the group loaded ahead of the window, which leaves it none.
+- When `layer_pix` takes a group (seen when the take toggle has passed its synchroniser, about 3 clocks after `take_t` toggles), the deadline loads 59 × 2^hs clocks, hs the `hscale` that group took at its start (the value in its `gset`): a group of 16 source pixels at about 3.7 system clocks a screen pixel (a tile group is 16 source pixels too), except for the line's first take, the group loaded ahead of the window, which leaves it none.
 - It counts down by 1 a clock, to 0, and stays there. None stays none.
 
 **Which layer asks next:** of the layers with a group being fetched or ready to start one, the one with the smallest deadline; on a tie, the next after the last layer served, in round-robin order. The deadlines are compared a clock before they are used (for timing): a decision can be a clock late, never wrong in a way that matters.

@@ -1,6 +1,6 @@
 # Layer pixel unit (layer_pix)
 
-Status: **draft**, revision 2: a group's depth, planar flag and scale travel with the group (`gset`) instead of being line settings. Agreed by retro68k (#34) and retro-z80 (design plan branch 26) and implemented (`rtl/layer_pix.v`, PR #9). To be locked with `layer_fetch` once both machines have adopted it.
+Status: **locked**, revision 2 (9 November 2026): a group's depth, planar flag and scale travel with the group (`gset`) instead of being line settings. Agreed by retro68k (#34) and retro-z80 (design plan branch 26) and implemented (`rtl/layer_pix.v`, PR #9). Changes from here are a revision 3, by request from a machine.
 
 One layer's pixel side. It takes the layer's 16-pixel groups from its data registers (filled by the machine's layer fetch on the system clock), shows them pixel by pixel in the layer's window, with fine scroll and horizontal scaling, and gives a colour index per pixel to the priority stage. Groups cross from the system clock to the pixel clock under a full / taken handshake of toggles. A group that is not there in time makes the layer transparent for that group (overrun).
 
