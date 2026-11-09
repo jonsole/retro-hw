@@ -116,7 +116,7 @@ The machine gives each layer a unit and:
 - The line's settings (`active`, `xs`, `xe`, `pos0`, `tile`), worked out in the blank and held through the line; `transp` and `palofs` straight from its registers, with a false-path constraint on them (4.4).
 - The group's settings come with the group: `gset` from `layer_fetch`, which takes them at each group's start. The machine's depth, planar and scale registers feed the fetch, not this unit.
 - A layer fetch on the system clock, with 8 data registers per layer (and the tile attributes with `TILES`): `layer_fetch.v` (docs/spec/layer_fetch.md) does this. At the line's start it empties the handshake (sets `fill_t` to the `take_t` it sees, so a spare group from the last line is dropped) and fetches the line's first group; then it fills a group each time one is taken. It gives `ready` once it has restarted for the line, through a synchroniser.
-- A per-group deadline on its side: a group lasts 16 × 2^hs pixel clocks once the window has started.
+- A per-group deadline on its side: a group lasts 16 × 2^hs pixel clocks once the window has started, hs the taken group's (4.3).
 - Something that counts `overrun_t` toggles, if the machine reports overruns.
 
 The unit has no registers: what the settings are called and where they live is the machine's.
