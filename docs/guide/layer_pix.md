@@ -6,8 +6,8 @@
 
 - A pixel clock and a clock 5 times as fast from the same MMCM.
 - A beam: `hc` (the pixel), `hn` (the next one) and `line_start` (one clock at the start of the horizontal blank).
-- The layer's settings for the line, held still from the blank to the end of the line.
-- A layer fetch with 8 data registers for the layer and the full / taken toggles.
+- The layer's window settings for the line, held still from the blank to the end of the line; `transp` and `palofs` live from the registers.
+- A layer fetch with 8 data registers for the layer, the group's settings (`gset`: depth, planar, scale) and the full / taken toggles.
 - A priority stage that takes `opaque` and `idx` from every layer.
 
 ## Instantiation
@@ -19,15 +19,14 @@ layer_pix #(.PLANAR(0), .TILES(0)) layer0 (
     .clk_pix(clk_pix), .clk_pix5(clk_pix5), .en(video_on),
     .hc(hc), .hn(hn), .line_start(hc == H_VISIBLE), .ready(fetch_ready),
     .active(l0_active), .xs(l0_xs), .xe(l0_xe),
-    .planar(1'b0), .lb(l0_log2_bpp), .planes(3'd0), .hs(l0_log2_scale),
     .pos0(l0_fine_scroll), .transp(l0_transparent), .palofs(l0_palette),
-    .tile(1'b0), .dat(l0_dat), .attr(10'd0),
+    .tile(1'b0), .dat(l0_dat), .attr(10'd0), .gset(l0_gset),
     .fill_t(l0_fill_t), .take_t(l0_take_t),
     .opaque(l0_opaque), .idx(l0_idx), .pri(), .raw(), .overrun_t(l0_overrun_t)
 );
 ```
 
-`fill_t` comes from the system clock; the unit synchronises it. `take_t` goes back to the system clock, where the fetch synchronises it.
+`fill_t` comes from the system clock; the unit synchronises it. `take_t` goes back to the system clock, where the fetch synchronises it. `gset` comes with `dat` from the fetch (`layer_fetch`'s `gset[6n +: 6]`): the depth, planar flag and scale the group was fetched with. The unit has no depth or scale inputs of its own; the machine's registers for them feed the fetch.
 
 ## A line, clock by clock
 
@@ -60,10 +59,10 @@ Only touch `dat` and `attr` while the unit is not full (`fill_t` = `take_t` as t
 
 ## Pitfalls
 
-- **Hold the settings.** The unit reads its settings every clock. Change them only in the horizontal blank, after `line_start`.
+- **Hold the window settings.** `active`, `xs`, `xe`, `pos0` and `tile` are read every clock: change them only in the horizontal blank, after `line_start`. Depth, planar and scale come with each group in `gset`, so a mid-line write to them (made at the fetch) shows from a group boundary, one or two groups on. `transp` and `palofs` are read raw from the machine's clock: constrain those paths (`set_false_path`, or `set_max_delay` across the `palofs` bits) and accept one mixed pixel while they change.
 - **Empty the handshake at the line start.** If the fetch leaves a spare group from the last line, the unit takes it as the new line's first group.
 - **Word order.** The first word of a chunky group goes in the highest data register used: for 4 bits per pixel, word 0 in register 3, word 3 in register 0.
 - **Byte order.** The leftmost pixel is in the top bits of a word. If the memory is little-endian, the fetch must put the even byte in the word's high half.
 - **The fast clock.** `clk_pix5` must be 5 times `clk_pix` with edges lined up. A slower synchroniser makes a new group visible later, which the fetch's deadline must allow for.
 - **Overrun is per group.** A late group blanks the layer from the group boundary to the next one; the unit does not take the group late. Count `overrun_t` toggles to see it happen.
-- **Unused features.** With `PLANAR` or `TILES` off, tie their inputs to 0 anyway, so simulation shows no X.
+- **Unused features.** With `PLANAR` or `TILES` off, tie their inputs to 0 anyway (`gset` bit 0 included), so simulation shows no X.
