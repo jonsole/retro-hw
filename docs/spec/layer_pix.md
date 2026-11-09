@@ -102,7 +102,7 @@ A scale that changes mid-line changes how many groups the window needs. The fetc
 
 ### 4.4 Live inputs
 
-`transp` and `palofs` are read raw, every pixel, straight from the machine's registers on its own clock: no synchroniser, by choice, so a copper can change them at any pixel. While the 4 bits of `palofs` change, one pixel can come out with a mix of the old and new bits. The machine constrains those paths as false paths (or synchronises them itself if it wants a clean change) and accepts the one pixel.
+`transp` and `palofs` are read raw, every pixel, straight from the machine's registers on its own clock: no synchroniser, by choice, so a copper can change them at any pixel. While the 4 bits of `palofs` change, one pixel can come out with a mix of the old and new bits. The machine constrains those paths (`set_false_path`, or `set_max_delay` to bound the skew between the bits) or synchronises them itself if it wants a clean change, and accepts the one pixel.
 
 ### 4.5 Video off
 
