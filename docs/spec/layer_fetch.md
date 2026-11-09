@@ -121,7 +121,7 @@ Each pointer (one a plane with `PLANAR`, else one a layer) is a byte address, `P
 - With `wrap` = n > 0, the bits from 9 + n up don't change on any of these moves: the pointer stays in its aligned block.
 - A `ptr_wr` sets both the pointer and its saved start, and wins over the fetch's own move in that clock. A fetch being set up in that clock starts again (4.8), whichever layer it is for.
 
-- A pointer that gave its first word on a line but not its last (a scale made wider mid-line, so the window ends with groups owed and `layer_pix` stops taking; a starved fetch; `dma_en` cleared mid-line) gets the line-end move at the next `line_go` instead: its saved start + `stride` if the line's `adv` (the copy that line took at its own `line_go`), else back to its saved start, with the `wrap` and `stride` of the clock the move is made in. This is judged per pointer: a plane that gave no word on the line (its `dma_en` bit off, or the layer fetched nothing) and a tile layer's pointer get no move. A `ptr_wr` to the pointer after its first word and before the move cancels the move, so the written value stands. The moves are made one pointer a clock from the clock after `line_go`, and all of them are made before the new line's first group is set up (stage A of 4.8 waits for them): a few clocks of the blank at most, none at all after a line that finished.
+- A pointer that gave its first word on a line but not its last (a scale made wider mid-line, so the window ends with groups owed and `layer_pix` stops taking; a starved fetch; `dma_en` cleared mid-line) gets the line-end move at the next `line_go` instead: its saved start + `stride` if the line's `adv` (the copy that line took at its own `line_go`), else back to its saved start, with the `wrap` and `stride` of the clock the move is made in. This is judged per pointer: a plane that gave no word on the line (its `dma_en` bit off, or the layer fetched nothing) and a tile layer's pointer get no move. A `ptr_wr` to the pointer after its first word and before the move cancels the move, so the written value stands. The moves are made from the clock after `line_go` by stages A and B themselves (4.8), as a last word with no request: two clocks a pointer, lowest pointer first. All of them are made before the new line's first group is set up: a few clocks of the blank (a planar layer with all 8 planes owed takes 16), none at all after a line that finished.
 
 So every pointer that starts a line ends it with its line-end move exactly once, and how many words a line reads (whole groups, fine scroll, a scale changed mid-line, a starved fetch) never matters to where the next line starts. A `ptr_wr` with any byte of the pointer counts as a write and sets the saved start too; a machine merging a partial write gives the whole merged value. A tile layer's pointer doesn't move (4.5).
 
@@ -178,7 +178,7 @@ Up to four reads can be on their way. Each carries the layer, the register (or e
 
 ### 4.8 How a fetch is set up
 
-A fetch takes two clocks: A picks the layer and its register, and reads its pointer and saved start; B works out the address and the pointer's next value, writes it, moves the group counts on, and puts up the request (or holds it in a one-entry holding place while `req` waits for its `ack`, so the next request is ready when the scheduler takes this one). Memory cycles are two clocks apart, so this costs no bandwidth. A doesn't start in a clock with `line_go` or a `ptr_wr`, nor while catch-up moves (4.3) are still to be made: they use A's read of the pointer and saved start, and the pointer's write. B waits while the holding place is full and `req` has not been taken, and a group start in B waits until the layer still has groups left. `line_go` or a `ptr_wr` in B sends it back to A, whichever layer it concerns.
+A fetch takes two clocks: A picks the layer and its register, and reads its pointer and saved start; B works out the address and the pointer's next value, writes it, moves the group counts on, and puts up the request (or holds it in a one-entry holding place while `req` waits for its `ack`, so the next request is ready when the scheduler takes this one). Memory cycles are two clocks apart, so this costs no bandwidth. A doesn't start in a clock with `line_go` or a `ptr_wr`. While catch-up moves (4.3) are still to be made, A and B make those instead of fetching: A reads the owed pointer's saved start, B writes its line-end move and puts up no request; a `ptr_wr` in that B sends it back to A, as for a fetch. B waits while the holding place is full and `req` has not been taken, and a group start in B waits until the layer still has groups left. `line_go` or a `ptr_wr` in B sends it back to A, whichever layer it concerns.
 
 ### 4.9 Size
 
@@ -186,12 +186,12 @@ Yosys 0.33, `synth_xilinx` for 7-series, the core alone with the machine's build
 
 | Build | LUTs | Flip-flops | LUT RAM |
 |-------|------|------------|---------|
-| retro68k's (`PLANAR`, `DATWRITE`, PW 23) | 1850 | 915 | 13 |
+| retro68k's (`PLANAR`, `DATWRITE`, PW 23) | 1866 | 914 | 13 |
 | retro68k's `bpldma.v` | 1753 | 870 | 12 |
-| retro-z80's (`TILES`, `LITTLE`) | 1918 | 1377 | 13 |
+| retro-z80's (`TILES`, `LITTLE`) | 2018 | 1413 | 13 |
 | retro-z80's `bpldma.v` | 2123 | 1754 | 1 |
 
-Most of the flip-flops are the 384 data registers. Revision 2 (the per-group settings, `gset`) cost retro-z80's build about 100 LUTs and 30 flip-flops, retro68k's 10 and 30. The core is a little larger than retro68k's fetch (the generic widths, the second synchroniser flop, the registered `urgent`) and smaller than retro-z80's, whose bus registers and pointer capture are now the machine's, and whose pointers were flip-flops where the core uses LUT RAM. The machines' Vivado builds are the ones that count.
+Most of the flip-flops are the 384 data registers. Revision 2 (the per-group settings, `gset`) cost retro-z80's build about 100 LUTs and 30 flip-flops, retro68k's 10 and 30. Revision 3 (the line-end catch-up, through stages A and B) cost retro68k's about 15 LUTs and no flip-flops, retro-z80's about 100 LUTs and 35 flip-flops. The core is a little larger than retro68k's fetch (the generic widths, the second synchroniser flop, the registered `urgent`) and smaller than retro-z80's, whose bus registers and pointer capture are now the machine's, and whose pointers were flip-flops where the core uses LUT RAM. The machines' Vivado builds are the ones that count.
 
 ### 4.10 Reset
 

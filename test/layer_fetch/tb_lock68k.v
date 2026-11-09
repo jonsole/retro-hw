@@ -60,22 +60,22 @@ module tb_lock68k;
     wire         r_go, r_gen, r_req, r_urg, c_go, c_gen, c_req, c_urg;
 
     // Revision 3: the core makes the line-end move of a pointer that started
-    // a line without finishing it, at the next line_go, one a clock while its
-    // stage A waits. The reference doesn't, so it gets the same moves as
+    // a line without finishing it, at the next line_go, through its stages A
+    // and B, before any fetch. The reference doesn't, so it gets the same moves as
     // pointer writes on its bus in the same clocks (a write holds its stage A
-    // too): a same-value write while the core picks the first, then each
-    // pointer's new value as the core writes it. Only the reference's saved
+    // too): a same-value write in each catch-up A clock, and each pointer's
+    // new value in the B clock where the core writes it. Only the reference's saved
     // starts differ after, and the next line's first words overwrite them.
     // The machine's own writes are held off while this runs.
-    wire [4:0]   cu_q    = dut.c_v ? dut.c_q : dut.c_sel;
+    wire [4:0]   cu_q    = dut.b_cgo ? dut.a_pi : dut.c_sel;
     wire [23:0]  cu_ra   = 24'hE00100 + {19'd0, cu_q[4:3]} * 24'h80 + 24'h20 + {21'd0, cu_q[2:0]} * 24'h4;
-    wire         ref_wr    = dut.cu_busy ? 1'b1 : rb_wr;
-    wire [23:2]  ref_addr  = dut.cu_busy ? cu_ra[23:2] : rb_addr;
-    wire [31:0]  ref_wdata = dut.cu_busy ? {9'd0, dut.c_v ? dut.c_next : ref.pt[cu_q]} : rb_wdata;
-    wire [3:0]   ref_be    = dut.cu_busy ? 4'b0111 : rb_be;
+    wire         ref_wr    = dut.cu_act ? 1'b1 : rb_wr;
+    wire [23:2]  ref_addr  = dut.cu_act ? cu_ra[23:2] : rb_addr;
+    wire [31:0]  ref_wdata = dut.cu_act ? {9'd0, dut.b_cgo ? dut.pt_next : ref.pt[cu_q]} : rb_wdata;
+    wire [3:0]   ref_be    = dut.cu_act ? 4'b0111 : rb_be;
     integer      n_cu = 0, n_cul = 0;
     always @(posedge clk) begin
-        if (dut.c_v && !ptr_wr) n_cu = n_cu + 1;
+        if (dut.b_cgo) n_cu = n_cu + 1;
         if (dut.line_go && dut.owe != 0) n_cul = n_cul + 1;
     end
     wire [9:0]   r_dl;
@@ -245,7 +245,7 @@ module tb_lock68k;
             end
             // Register writes: one a clock at most. BPLDMA only in the line_go
             // clock. None while the core's catch-up moves may run (above).
-            if (dut.line_go || dut.cu_busy) ;
+            if (dut.line_go || dut.cu_act) ;
             else if (dma_pending && r[9:8] != 2'd0)
                 write(2'd2, {$random} % 3, 3'd0, {$random} & 32'h0000_80FF, 4'b0011);
             else if (!dma_pending && r[12:8] == 5'd0)                                // a whole pointer, often just below a wrap block's end

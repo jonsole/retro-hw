@@ -280,10 +280,10 @@ module tb_model;
                     cx_m = (PLANAR != 0) ? cx_m : 8*cx_m;
                     cx_v = 1'b1;
                 end
-            end else if (e_pend && e_seen && dut.c_v && !ptr_wr) begin
+            end else if (e_pend && e_seen && dut.b_cgo) begin
                 // A catch-up move is made in this clock: with the stride of now
-                e_cstr[dut.c_q] = stride[16*((PLANAR != 0) ? dut.c_q / 8 : dut.c_q) +: 16];
-            end else if (e_pend && e_seen && !dut.cu_busy) begin
+                e_cstr[dut.a_pi] = stride[16*((PLANAR != 0) ? dut.a_pi / 8 : dut.a_pi) +: 16];
+            end else if (e_pend && e_seen && !dut.cu_act) begin
                 e_pend = 1'b0;
                 for (n = 0; n < NL; n = n + 1)
                     for (w = 0; w < 8; w = w + 1) if (e_chk[8*n + w]) begin
