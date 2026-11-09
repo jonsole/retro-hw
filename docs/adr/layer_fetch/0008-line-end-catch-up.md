@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # A pointer that started a line always gets its line-end move
