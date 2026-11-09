@@ -110,6 +110,7 @@ module layer_fetch #(
 );
     localparam PIW = (PLANAR != 0) ? LW + 3 : LW;     // a pointer's index: {layer, plane}, or the layer
     localparam [31:0] NP  = 32'd1 << PIW;              // pointers (a power of two, for the index width)
+    localparam [31:0] NPV = (PLANAR != 0) ? 8 * NL : NL;   // ... of which these exist
     localparam [31:0] DRN = 32'd1 << (LW + 3);         // data registers, likewise; 8 a layer are used
     localparam [31:0] ENN = 32'd1 << (LW + 1);         // tile entries, two a layer
     localparam [9:0] DL_NONE = 10'h3FF;
@@ -432,7 +433,9 @@ module layer_fetch #(
     always @(*) begin : lowest
         integer q;
         c_low = {PIW{1'b0}};
-        for (q = NP - 1; q >= 0; q = q - 1) if (owe[q]) c_low = q[PIW-1:0];
+        // Only pointers that exist: a padded index (a layer number NL or
+        // more) would build the per-layer selection for layers there aren't
+        for (q = NPV - 1; q >= 0; q = q - 1) if (owe[q]) c_low = q[PIW-1:0];
     end
     assign c_sel = c_low;
     wire [NP-1:0] one_wi  = {{(NP-1){1'b0}}, 1'b1} << wi;

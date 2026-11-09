@@ -30,7 +30,8 @@ done
 
 # The machines' builds of the cores with build options
 check layer_fetch "-set PLANAR 1 -set DATWRITE 1 -set PW 23"
-check layer_fetch "-set TILES 1 -set LITTLE 1"
+check layer_fetch "-set PLANAR 0 -set TILES 1 -set LITTLE 1"
+check layer_fetch "-set NL 1 -set PLANAR 0 -set TILES 1 -set LITTLE 1"
 check layer_pix   "-set PLANAR 0 -set TILES 1"
 check blitter     "-set LE 1 -set XPORT 1 -set PORTJOB 1 -set LINE 1 -set EDGES 1"
 

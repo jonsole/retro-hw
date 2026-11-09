@@ -186,12 +186,13 @@ Yosys 0.33, `synth_xilinx` for 7-series, the core alone with the machine's build
 
 | Build | LUTs | Flip-flops | LUT RAM |
 |-------|------|------------|---------|
-| retro68k's (`PLANAR`, `DATWRITE`, PW 23) | 1866 | 914 | 13 |
+| retro68k's (`PLANAR`, `DATWRITE`, PW 23) | 2132 | 958 | 13 |
 | retro68k's `bpldma.v` | 1753 | 870 | 12 |
-| retro-z80's (`TILES`, `LITTLE`) | 2018 | 1413 | 13 |
+| retro-z80's (`TILES`, `LITTLE`, `PLANAR` 0) | 1957 | 1383 | 13 |
+| retro-z80's KS2 (as above, NL 1) | 891 | 586 | 13 |
 | retro-z80's `bpldma.v` | 2123 | 1754 | 1 |
 
-Most of the flip-flops are the 384 data registers. Revision 2 (the per-group settings, `gset`) cost retro-z80's build about 100 LUTs and 30 flip-flops, retro68k's 10 and 30. Revision 3 (the line-end catch-up, through stages A and B) cost retro68k's about 15 LUTs and no flip-flops, retro-z80's about 100 LUTs and 35 flip-flops. The core is a little larger than retro68k's fetch (the generic widths, the second synchroniser flop, the registered `urgent`) and smaller than retro-z80's, whose bus registers and pointer capture are now the machine's, and whose pointers were flip-flops where the core uses LUT RAM. The machines' Vivado builds are the ones that count.
+Most of the flip-flops are the 384 data registers. Against revision 1, revisions 2 and 3 together cost retro68k's build about 290 LUTs and 75 flip-flops (most of it the catch-up over 24 pointers), retro-z80's about 90 and 40, and its KS2 build about 65 and 15 (the per-group settings; the catch-up of one pointer costs almost nothing). Earlier figures here were wrong: retro-z80's build was measured with `PLANAR` left at its default of 1, and revisions 2 and 3 had registers with two drivers, whose logic synthesis dropped. retro-z80's Vivado build of the KS2 machine is the one that counts there. The core is a little larger than retro68k's fetch (the generic widths, the second synchroniser flop, the registered `urgent`) and smaller than retro-z80's, whose bus registers and pointer capture are now the machine's, and whose pointers were flip-flops where the core uses LUT RAM. The machines' Vivado builds are the ones that count.
 
 ### 4.10 Reset
 
