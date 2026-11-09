@@ -24,6 +24,13 @@
 // on a line saves the pointer (the line's start); the last sets it to that
 // start + stride, or back to the start on a repeated line.
 //
+// A pointer that gave its first word on a line but not its last (a scale
+// made wider mid-line, a starved fetch, dma_en cleared) owes its line-end
+// move: from line_go stages A and B move the owed pointers, two clocks
+// each and with no request, to their saved start (+ stride if that line's
+// adv) before the new line's first group is set up. Judged per pointer, so
+// a plane that gave no word is left alone.
+//
 // A group's depth, planar flag and scale are taken as it starts (stage A
 // of its first word), from a one-clock register of the settings, and go
 // out with it in gset for layer_pix: a setting the machine changes applies
@@ -102,9 +109,9 @@ module layer_fetch #(
     input  wire [15:0]       rdata
 );
     localparam PIW = (PLANAR != 0) ? LW + 3 : LW;     // a pointer's index: {layer, plane}, or the layer
-    localparam NP  = 1 << PIW;                         // pointers (a power of two, for the index width)
-    localparam DRN = 1 << (LW + 3);                    // data registers, likewise; 8 a layer are used
-    localparam ENN = 1 << (LW + 1);                    // tile entries, two a layer
+    localparam [31:0] NP  = 32'd1 << PIW;              // pointers (a power of two, for the index width)
+    localparam [31:0] DRN = 32'd1 << (LW + 3);         // data registers, likewise; 8 a layer are used
+    localparam [31:0] ENN = 32'd1 << (LW + 1);         // tile entries, two a layer
     localparam [9:0] DL_NONE = 10'h3FF;
     localparam [31:0]   LASTI = NL - 1;
     localparam [LW-1:0] LAST0 = LASTI[LW-1:0];           // the round robin starts at layer 0
@@ -190,8 +197,6 @@ module layer_fetch #(
         end
         for (g = 0; g < NL; g = g + 1) begin : aout
             assign attr[10*g +: 10] = (TILES != 0) ? at[g] : 10'd0;
-            assign gset[6*g +: 6]   = {g_hs[g], g_dep[g], g_pl[g]};
-            assign newg[g]          = (rem[g] == 10'd0);
         end
     endgenerate
     assign dat_rdata = (DATWRITE != 0) ? dr[dat_sel] : 16'd0;
@@ -236,6 +241,14 @@ module layer_fetch #(
             e_pl[n]  = newg[n] ? rs_pl[n] : g_pl[n];
         end
     end
+    // Declared above, so the per-layer assigns come after (Icarus needs a
+    // signal declared before use)
+    generate
+        for (g = 0; g < NL; g = g + 1) begin : gout
+            assign gset[6*g +: 6] = {g_hs[g], g_dep[g], g_pl[g]};
+            assign newg[g]        = (rem[g] == 10'd0);
+        end
+    endgenerate
 
     // The registers a group fills (slots 9-2), and for a tile layer the
     // entries it reads (slots 1, 0): highest first
@@ -332,7 +345,13 @@ module layer_fetch #(
 
     // ---------------------------------------------------------------- A: start a fetch
     reg           phase;                        // 0: A, 1: B
-    wire          a_go = !rst && !phase && !line_go && !ptr_wr && |want && gmask != 10'd0;
+    reg           cu_act;                       // catch-up moves still to make (below)
+    reg  [NP-1:0] owe;                          // ... the pointers that owe their line-end move
+    reg  [NL-1:0] cu_adv;                       // ... and the adv of the line they belong to
+    wire [PIW-1:0] c_sel;                       // ... the next pointer to move
+    wire          a_go  = !rst && !phase && !line_go && !ptr_wr && !cu_act && |want && gmask != 10'd0;
+    wire          a_cgo = !rst && !phase && !line_go && !ptr_wr && cu_act;  // A for a catch-up move
+    reg           a_cu;                         // B finishes a catch-up move, not a fetch
     reg  [LW-1:0] a_pick;
     reg  [3:0]    a_slot;
     reg  [PIW-1:0] a_pi;
@@ -345,6 +364,20 @@ module layer_fetch #(
         g_hs[pick]  <= rs_hs[pick];
         g_pl[pick]  <= rs_pl[pick];
     end
+    // A catch-up move is a line's last word without a request: B writes
+    // the saved start (+ stride) and nothing else
+    wire [PIW-1:0] sv_i   = cu_act ? c_sel : pi;
+    wire [LW-1:0]  c_lay  = (PLANAR != 0) ? c_sel[PIW-1:PIW-LW] : c_sel[LW-1:0];
+    always @(posedge clk) if (a_go || a_cgo) begin
+        a_cu      <= a_cgo;
+        a_sv      <= svm[sv_i];
+    end
+    always @(posedge clk) if (a_cgo) begin
+        a_pick    <= c_lay;
+        a_pi      <= c_sel;
+        a_first_w <= 1'b0;
+        a_last_w  <= 1'b1;
+    end
     always @(posedge clk) if (a_go) begin
         a_pick    <= pick;
         a_slot    <= sl_n;
@@ -355,7 +388,6 @@ module layer_fetch #(
         a_first_w <= first_w;
         a_last_w  <= last_w;
         a_pt      <= pt[pi];
-        a_sv      <= svm[pi];
         a_col     <= (sl_n >= 4'd2) ? pcol : !sl_n[0];              // an entry: slot 1 column 0, slot 0 column 1
         a_flip    <= pflip;
         a_j       <= pj;
@@ -368,18 +400,56 @@ module layer_fetch #(
     reg           nxt_fill, nxt_last, nxt_gen, nxt_flip, nxt_bsel;
     reg  [AW-1:0] nxt_addr;
     wire          b_abort = line_go || ptr_wr;
-    wire          b_go    = !rst && phase && !b_abort && !(req && !ack && nxt_v)
+    wire          b_cgo   = !rst && phase && !b_abort && a_cu;         // B of a catch-up move
+    wire          b_go    = !rst && phase && !b_abort && !a_cu && !(req && !ack && nxt_v)
                             && (!a_gstart || left[a_pick] != 12'd0);
     wire          a_tile  = (TILES != 0) && t_tile[a_pick];
     wire          a_ent   = (TILES != 0) && (a_slot < 4'd2);
     wire [PW-1:0] start   = a_first_w ? a_pt : a_sv;                // this line's start
     wire [15:0]   a_mod   = stride[16*a_pick +: 16];
-    wire [PW-1:0] a_str   = pv_adv[a_pick] ? {{(PW-16){a_mod[15]}}, a_mod[15:1], 1'b0} : {PW{1'b0}};
+    wire          a_adv   = a_cu ? cu_adv[a_pick] : pv_adv[a_pick];     // a catch-up move: the old line's
+    wire [PW-1:0] a_str   = a_adv ? {{(PW-16){a_mod[15]}}, a_mod[15:1], 1'b0} : {PW{1'b0}};
     wire [PW-1:0] a_wm    = wmask_of(wrap[4*a_pick +: 4]);
     wire [PW-1:0] pt_next = a_last_w ? wadd(start, a_str, a_wm) : wadd(a_pt, {{(PW-2){1'b0}}, 2'd2}, a_wm);
     wire [PW-1:0] prow    = pn[{a_pick, a_col}];
     wire [PW-1:0] b_addr  = !a_tile ? a_pt : a_ent ? eaddr[a_pick] : prow + {{(PW-4){1'b0}}, a_j, 1'b0};
     wire          b_bsel  = prow[0];
+
+    // ---------------------------------------------------------------- catch-up
+    // owe: the pointer gave its first word on this line and not yet its last.
+    // From line_go, while any are left (cu_act), each is moved in turn by an
+    // A and B of its own (a_cgo, b_cgo), lowest first, with the old line's
+    // adv; stage A fetches nothing until they are done. A ptr_wr clears a
+    // pointer's flag (its value stands) and, in B, sends the move back to A.
+    reg  [PIW-1:0] c_low;
+    always @(*) begin : lowest
+        integer q;
+        c_low = {PIW{1'b0}};
+        for (q = NP - 1; q >= 0; q = q - 1) if (owe[q]) c_low = q[PIW-1:0];
+    end
+    assign c_sel = c_low;
+    wire [NP-1:0] one_wi  = {{(NP-1){1'b0}}, 1'b1} << wi;
+    wire [NP-1:0] one_api = {{(NP-1){1'b0}}, 1'b1} << a_pi;
+    wire [NP-1:0] owe_cu  = owe & ~(ptr_wr ? one_wi : {NP{1'b0}}) & ~(b_cgo ? one_api : {NP{1'b0}});
+
+    always @(posedge clk) begin
+        if (rst) begin
+            owe <= {NP{1'b0}};  cu_act <= 1'b0;  cu_adv <= {NL{1'b0}};
+        end else if (line_go) begin
+            owe    <= owe_cu;
+            cu_act <= owe_cu != {NP{1'b0}};
+            cu_adv <= pv_adv;                                       // the old line's
+        end else if (cu_act) begin
+            owe    <= owe_cu;
+            cu_act <= owe_cu != {NP{1'b0}};
+        end else begin
+            if (b_go && !a_tile) begin
+                if (a_last_w)       owe[a_pi] <= 1'b0;
+                else if (a_first_w) owe[a_pi] <= 1'b1;
+            end
+            if (ptr_wr) owe[wi] <= 1'b0;
+        end
+    end
 
     // The pointer: a write from the machine wins over the fetch's own move
     // and sets the saved start too. A tile layer leaves its pointer alone.
@@ -387,6 +457,8 @@ module layer_fetch #(
         if (ptr_wr) begin
             pt[wi]  <= {ptr_wdata[PW-1:1], 1'b0};
             svm[wi] <= {ptr_wdata[PW-1:1], 1'b0};
+        end else if (b_cgo) begin
+            pt[a_pi] <= pt_next;                                    // start = the saved start (a_first_w 0)
         end else if (b_go && !a_tile) begin
             pt[a_pi] <= pt_next;
             if (a_first_w) svm[a_pi] <= a_pt;
@@ -408,8 +480,8 @@ module layer_fetch #(
                         : (rem[n] != 10'd0) || (left[n] != 12'd0 && !busy[n] && !full[n] && gmask_l[n] != 10'd0));
         end
         if (rst || line_go)       phase <= 1'b0;
-        else if (a_go)            phase <= 1'b1;
-        else if (b_go || b_abort) phase <= 1'b0;
+        else if (a_go || a_cgo)   phase <= 1'b1;
+        else if (b_go || b_cgo || b_abort) phase <= 1'b0;
     end
 
     // Tiles: the map row's address, the next entry's, and each column's pattern row

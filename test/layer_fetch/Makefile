@@ -32,4 +32,4 @@ build/tb_model_4c.vvp: tb_model.v $(RTL)/layer_fetch.v
 	$(IVERILOG) -g2005 -Wall -Wno-timescale -o $@ -s tb_model -Ptb_model.NL=4 tb_model.v $(RTL)/layer_fetch.v
 build/tb_model_2p.vvp: tb_model.v $(RTL)/layer_fetch.v
 	mkdir -p build
-	$(IVERILOG) -g2005 -Wall -Wno-timescale -o $@ -s tb_model -Ptb_model.NL=2 -Ptb_model.PLANAR=1 -Ptb_model.LITTLE=1 tb_model.v $(RTL)/layer_fetch.v
+	$(IVERILOG) -g2005 -Wall -Wno-timescale -o $@ -s tb_model -Ptb_model.NL=2 -Ptb_model.PLANAR=1 -Ptb_model.LITTLE=1 -Ptb_model.DATWRITE=1 tb_model.v $(RTL)/layer_fetch.v

@@ -96,7 +96,7 @@ A request is urgent when its layer's deadline is under `URG_BASE` + `URG_WORD` Ã
 - **Settings copied at the line start must be ready before `line_go`,** two clocks after `line_t` toggles. Work them out in the blank.
 - **Live settings change at once.** A stride written mid-line applies at that line's end (if the line's last word hasn't been set up yet); wrap on the next pointer move. That is deliberate, for copper effects.
 - **Depth, planar and scale belong to the group.** A write applies from the layer's next group start, and travels to `layer_pix` in `gset`, so the two sides always agree about a group. The fetch works a group ahead: the change shows one or two groups (16â€“32 source pixels) past where the beam was. A scale change mid-line also changes how many groups the window needs, and `ngroups` was fixed at the line start: the line ends with groups unshown, or runs out early (`layer_pix` spec 4.3).
-- **A starved line leaves the pointer where it stopped,** with no stride applied. Give the display enough owned slots.
+- **A short line still ends right.** A pointer whose line ended with words owed (a starved fetch, `dma_en` cleared mid-line, a scale made wider mid-line) gets its line-end move at the next `line_go`, so the next line starts where it should. The short line itself is still short: give the display enough owned slots.
 - **Tile patterns are chunky.** `PLANAR` and `TILES` are not built together.
 - **`LITTLE` swaps data words, not map entries.** An entry is the word as read.
 - **One requester, in order.** The scheduler returns this requester's reads in the order they were given; up to four can be on their way.
