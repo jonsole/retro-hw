@@ -1,6 +1,6 @@
 # Layer fetch (layer_fetch)
 
-Status: **draft**, reviewed by retro68k and retro-z80 and implemented (`rtl/layer_fetch.v`). To be locked together with `layer_pix` once both machines have adopted it.
+Status: **draft**, revision 2 for review: a group's depth, planar flag and scale are taken at the group's start and travel with it to `layer_pix` (`gset`). Revision 1 is implemented (`rtl/layer_fetch.v`) and adopted by retro-z80; revision 2 was agreed by both machines (retro68k #34, retro-z80 design plan branch 26). To be locked together with `layer_pix` once both machines have adopted it.
 
 The layer fetch reads each layer's words from memory, one 16-pixel group at a time, into the layer's data registers, where `layer_pix.v` takes them. It is one requester on the memory scheduler (`dmac.v`) for all its layers, and picks which layer asks next by earliest deadline. It counts each layer's pointer on as it reads, and moves it to the next line's start at the end of a line.
 
@@ -19,17 +19,18 @@ It is retro68k's and retro-z80's `bpldma.v` made one core, with no registers a C
 | Memory | One requester on the scheduler: `req`, `urgent`, `addr`, `ack`, read data with `rvalid` |
 | Layer choice | Earliest deadline first; on a tie, round robin after the last layer served |
 | Urgent | Registered. Set when the asking layer's deadline is under a mark set by parameters |
-| To `layer_pix` | The data registers (`dat`), the tile attributes (`attr`), and a fill toggle per layer (`fill_t`, answered by `take_t`) |
+| To `layer_pix` | The data registers (`dat`), the tile attributes (`attr`), the group's own depth, planar flag and scale (`gset`), and a fill toggle per layer (`fill_t`, answered by `take_t`) |
 | Registers | No bus registers. Inside: pointers, line state, data registers |
 
 ## 2. Ports
 
 Layer n's signals are bit n, or field n, of each per-layer port (bits n×W to n×W+W−1 of a W-bit field). A port marked with an option exists only to be used with that option; with the option off it is ignored and costs nothing.
 
-Settings are read at one of two times, kept as both machines do today:
+Settings are read at one of three times:
 
 - **Copied at `line_go`:** the value at the line's start holds for the whole line, so a change mid-line (a CPU or copper write) applies from the next line.
-- **Read live:** a change applies the next time the core uses the setting, mid-line included. The Timing column says when that is. This is deliberate: a copper or CPU write can change these settings mid-line for an effect.
+- **Taken at a group's start:** the value in the clock before a layer's group starts (4.8, stage A) is the group's, for its words and in `gset` for the pixel side. A change applies from the layer's next group, never inside one. This is deliberate: a copper or CPU write can change a layer's depth or scale mid-line for an effect, and the fetch and `layer_pix` always agree about a group.
+- **Read live:** a change applies the next time the core uses the setting, mid-line included.
 
 | Name | Dir | Width | Meaning | Timing |
 |------|-----|-------|---------|--------|
@@ -41,9 +42,9 @@ Settings are read at one of two times, kept as both machines do today:
 | `line_gen` | out | 1 | Toggles with `line_go` | – |
 | `act` | in | NL | The layer shows on the line about to be fetched | Copied at `line_go` |
 | `adv` | in | NL | Its pointers move on to the next source line after this line (else back to this line's start: a repeated line of a vertically scaled layer) | Copied at `line_go` |
-| `depth` | in | 3×NL | Words per group − 1: planes − 1 for a planar layer; for a chunky layer, bits a pixel − 1 as a word count (0, 1, 3 or 7) | Read live, when a group starts and for the urgent count (with `DATWRITE`, a group start sees it a clock late, through the same register as `dma_en`). With `TILES`, a tile layer's depth for storing rows is also copied at `line_go` |
-| `planar` | in | NL | `PLANAR`: the layer is planar, one pointer per plane | Read live, when a word is picked |
-| `hscale` | in | 2×NL | log2 of the horizontal scale. Sets how long a group lasts (4.4) | Read live, when a group is taken (and for a map entry's deadline) |
+| `depth` | in | 3×NL | Words per group − 1: planes − 1 for a planar layer; for a chunky layer, bits a pixel − 1 as a word count (0, 1, 3 or 7) | Taken at a group's start, through a one-clock register (the same one as `dma_en`); live for the urgent count. A tile layer's rows are stored with the depth its pattern group took |
+| `planar` | in | NL | `PLANAR`: the layer is planar, one pointer per plane | Taken at a group's start, as `depth` |
+| `hscale` | in | 2×NL | log2 of the horizontal scale. Sets how long a group lasts (4.4) | Taken at a group's start, as `depth`; the deadline uses the taken group's (and, for a map entry's deadline, the live value) |
 | `wrap` | in | 4×NL | 0: no wrap. n: the layer's pointers wrap within an aligned block of 2^(n+9) bytes | Read live, on every pointer move |
 | `stride` | in | 16×NL | Signed byte stride from one source line's start to the next. Bit 0 is ignored | Read live, when each pointer's last word of the line is set up (4.8): a change mid-line applies at that line's end |
 | `ngroups` | in | 12×NL | Groups to fetch on the line (whole groups covering the window and fine scroll) | Copied at `line_go` |
@@ -64,6 +65,7 @@ Settings are read at one of two times, kept as both machines do today:
 | `dat_rdata` | out | 16 | `DATWRITE`: the data register `dat_sel` names | Combinational from `dat_sel` |
 | `dat` | out | 128×NL | The data registers to `layer_pix`: layer n register r in bits 128n + 16r to 128n + 16r + 15 | Stable while the layer is full |
 | `attr` | out | 10×NL | `TILES`: the group's {PRI, PAL} for tile column 1 (bits 9–5) and column 0 (bits 4–0) | With `dat` |
+| `gset` | out | 8×NL | The group's settings for `layer_pix`, as taken at its start: bit 0 planar, bits 2–1 log2 of the bits a pixel, bits 5–3 planes − 1, bits 7–6 `hscale` (`layer_pix` spec, section 2) | With `dat` |
 | `fill_t` | out | NL | Toggles when the layer's next group is complete in its data registers | – |
 | `take_t` | in | NL | From `layer_pix`: toggles when the layer's group is taken. Synchronised inside | Any |
 | `req` | out | 1 | Read one word. Held until `ack` | – |
@@ -105,7 +107,7 @@ The first group of a line is fetched ahead of the window, in the blank.
 
 ### 4.2 Words of a group
 
-The words of a group go to data registers high to low. Chunky with 2^k words: registers 2^k − 1 down to 0, all from the layer's pointer. Planar with p planes: register j from plane j's pointer, planes p − 1 down to 0. With `DATWRITE`, only the registers whose `dma_en` bit is set are fetched; the others keep what was last written to them, and `layer_pix` takes that value with every group. A layer whose `dma_en` fills no register fetches nothing (4.6).
+A group's depth and planar flag are those in the clock before it starts (stage A of 4.8), through a one-clock register, and go out with it in `gset`. The words of a group go to data registers high to low. Chunky with 2^k words: registers 2^k − 1 down to 0, all from the layer's pointer. Planar with p planes: register j from plane j's pointer, planes p − 1 down to 0. With `DATWRITE`, only the registers whose `dma_en` bit is set are fetched; the others keep what was last written to them, and `layer_pix` takes that value with every group. A layer whose `dma_en` fills no register fetches nothing (4.6).
 
 With `LITTLE`, a word's two bytes are swapped as it is stored in a data register. A tile layer's map entries are not swapped (4.5).
 
@@ -126,7 +128,7 @@ So how many words a line reads (whole groups, fine scroll) never matters to wher
 Each layer has a deadline: system clocks until the group it took last is used up, so the next one must be in by then.
 
 - At `line_go` every deadline is none (10'h3FF).
-- When `layer_pix` takes a group (seen when the take toggle has passed its synchroniser, about 3 clocks after `take_t` toggles), the deadline loads 59 × 2^hscale clocks (a group of 16 source pixels at about 3.7 system clocks a screen pixel; a tile group is 16 source pixels too), except for the line's first take, the group loaded ahead of the window, which leaves it none.
+- When `layer_pix` takes a group (seen when the take toggle has passed its synchroniser, about 3 clocks after `take_t` toggles), the deadline loads 59 × 2^hs clocks, hs the `hscale` that group took at its start (the value in its `gset`), (a group of 16 source pixels at about 3.7 system clocks a screen pixel; a tile group is 16 source pixels too), except for the line's first take, the group loaded ahead of the window, which leaves it none.
 - It counts down by 1 a clock, to 0, and stays there. None stays none.
 
 **Which layer asks next:** of the layers with a group being fetched or ready to start one, the one with the smallest deadline; on a tie, the next after the last layer served, in round-robin order. The deadlines are compared a clock before they are used (for timing): a decision can be a clock late, never wrong in a way that matters.
@@ -146,6 +148,7 @@ A tile layer's group is two tile columns of 8 source pixels. Its words are, high
 - The line starts with a group of entries only, for its first group; so a tile layer has `ngroups` + 1 groups to fetch.
 - Its last group reads no entries.
 - A group is complete (`fill_t`) with its last pattern word; the next group can start once its entries are in.
+- A tile group's rows are stored (and its entries' pattern addresses worked out) with the depth the group took at its start; a depth change applies from the next pattern group.
 - At 1 bit a pixel a column's row is one byte, so a group makes two pattern reads, one a column. Each keeps the byte its address names (with `LITTLE`, an odd address is the word's high byte): column 0's in the high half of data register 0, column 1's in the low half.
 
 Addresses, all byte addresses (the word read is the one holding the byte):
@@ -196,7 +199,7 @@ Most of the flip-flops are the 384 data registers. The core is a little larger t
 
 - **Register file.** The machine keeps its registers and bus. It loads pointers with `ptr_wr` (merging bytes from `ptr_rdata` for a partial write) and reads them with `ptr_rdata`, and holds stride, wrap, the tile pointers and the rest, driving them as ports.
 - **Line settings.** Its video unit works out each layer's `act`, `adv`, `ngroups` and the tile row and column for the next line, ready at `line_go`. The settings read live (section 2) can come straight from the machine's registers.
-- **`layer_pix`.** One per layer: `dat`, `attr`, `fill_t` to it, `take_t` back. Its `ready` comes from `line_gen` through a synchroniser.
+- **`layer_pix`.** One per layer: `dat`, `attr`, `gset`, `fill_t` to it, `take_t` back. Its `ready` comes from `line_gen` through a synchroniser. The machine's depth, planar and scale registers drive this core; `layer_pix` gets them per group in `gset`.
 - **The scheduler.** One requester: `req`, `urgent`, `addr`, `ack`, and `rvalid_o` of that requester as `rvalid`. `rdata` from the memory controller.
 - **The urgent mark.** Set `URG_BASE` and `URG_WORD` from the scheduler's worst-case wait for this requester (scheduler spec 4.6) in every slot plan the machine uses, plus one clock for the registered `urgent`. For example, on retro-z80's plan (slots 0 and 2 locked) the layers' worst case is 8 clocks, which its mark covers. `URG_WORD` is the clocks between this requester's words when it has the cycles it owns: 5 for two owned slots in a 5-slot, 100 ns round.
 - **Byte order.** `LITTLE` = 1 for a little-endian machine.
@@ -219,3 +222,4 @@ Most of the flip-flops are the 384 data registers. The core is a little larger t
 | F3 | `sprite_fetch.v` has the same unused deadline output and a combinational urgent; it could get the same treatment |
 | F4 | The deadline's 59 clocks a group assumes about 3.7 system clocks a screen pixel (576p at 100 MHz). A machine with another pixel clock needs it as a parameter |
 | F5 | retro-z80's planned attribute layer (its video spec 7.1) needs no core change: it is a fourth layer (`NL` = 4) set up as 1-bit chunky, one word (two cells) a group, with its own pointer through `ptr_wr`, its own stride, wrap 0, the target layer's `hscale`, `adv` only on a cell row's last line, and its own `ngroups`. Its `fill_t` and `take_t` go to an attribute shifter in place of `layer_pix`. retro-z80 will confirm when it builds it on the KS3 |
+| F6 | Revision 2 (per-group settings, `gset`) is specified here and in `layer_pix`; the RTL and tests follow its review. Until then `rtl/layer_fetch.v` is revision 1: depth, planar and scale live, no `gset` |
