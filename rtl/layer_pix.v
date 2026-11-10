@@ -39,7 +39,7 @@ module layer_pix #(
     input  wire         clk_pix,
     input  wire         clk_pix5,      // 5 x clk_pix, edges lined up (same MMCM): for the fast synchroniser
     input  wire         en,            // video on
-    input  wire [10:0]  hc,            // beam, and the next pixel's position (picture-relative)
+    input  wire [10:0]  hc,            // beam (not used now), and the next pixel's position (picture-relative)
     input  wire [10:0]  hn,
     input  wire         line_start,    // start of horizontal blank: a new line's setup begins
     input  wire         ready,         // the data registers hold this line's data (after the fetcher restarted)
@@ -75,7 +75,15 @@ module layer_pix #(
     (* ASYNC_REG = "TRUE" *) reg [1:0] fill_s;
     always @(posedge clk_pix5) fill_s <= {fill_s[0], fill_t};
     wire        avail  = fill_s[1] != take_t;
-    wire        in_win = active && (hc >= xs) && (hc < xe);
+    // The window is a flag: set as the beam comes to xs, cleared as it
+    // comes to xe (xs must not be after xe, nor xe after the line's end)
+    reg         win;
+    wire        at_xe  = (hn == xe);
+    wire        in_win = active && win;
+    always @(posedge clk_pix) begin
+        if (at_xe)         win <= 1'b0;
+        else if (hn == xs) win <= 1'b1;
+    end
     wire        tl     = (TILES != 0) && tile;
 
     reg  [15:0] sh [0:7];              // shifters
@@ -168,7 +176,7 @@ module layer_pix #(
                 if (step) begin
                     hsub <= 3'd0;
                     pos  <= nxp[3:0];
-                    if (last && hn < xe) load;
+                    if (last && !at_xe) load;
                 end else
                     hsub <= hsub + 1'b1;
             end
