@@ -68,12 +68,17 @@ module tb_lock_sprite;
     wire [31:0]   r_pal, c_pal, r_coll, c_coll;
     wire [47:0]   r_wp, c_wp;
 
+    // A hand-fed word goes into the core's FIFO a clock or more after its
+    // strobe (when no memory word comes): the reference is given it then.
+    // The bench holds sel and sends no other strobe for sel until it is in
+    wire r_dat_wr = (MANUAL != 0) ? dut.m_go : dat_wr;
+    wire m_hold   = dat_wr || (dut.m_p && !dut.m_go);
     sprite_fetch_ref #(.NS(NS), .PW(PW), .SWAP_BYTES(LITTLE), .URGENT(URGENT), .MANUAL(MANUAL)) ref (
         .clk(clk), .rst(rst), .set_sel(r_set_sel),
         .set_hstart(set_hstart), .set_hstop(set_hstop), .set_vstart(set_vstart), .set_vstop(set_vstop),
         .set_bpp(set_bpp), .set_depth(set_depth), .set_pal(set_pal), .set_xstep(set_xstep), .set_ystep(set_ystep),
         .dma_on(dma_on), .dma_mask(dma_mask), .start(start), .sel(sel), .lst_cur(r_lst), .lst_wr(lst_wr), .lst_new(lst_new),
-        .fifo_count(r_cnt), .dat_wr(dat_wr), .dat(dat), .vblank(vblank), .beam_v(beam_v), .beam_h(beam_h),
+        .fifo_count(r_cnt), .dat_wr(r_dat_wr), .dat(dat), .vblank(vblank), .beam_v(beam_v), .beam_h(beam_h),
         .mem_req(r_req), .mem_addr(r_addr), .mem_deadline(r_dl), .mem_urgent(r_urg),
         .mem_ack(ack), .mem_rvalid(rvalid), .mem_rdata(rdata),
         .p_hs(r_hs), .p_xe(r_xe), .p_act(r_act), .p_lb(r_lb), .p_xstep(r_xstep), .p_depth(r_depth), .p_pal(r_pal), .p_dma(r_dma),
@@ -182,7 +187,7 @@ module tb_lock_sprite;
         lst_wr <= 1'b0;  dat_wr <= 1'b0;  start <= 8'd0;  coll_clr <= 32'd0;
         if (!rst) begin
             r = $random;
-            sel <= $random;
+            if (!m_hold) sel <= $random;
             fifo_ra <= {$random, $random};
             // Settings: changed one at a time, now and then. Not in the
             // clock a sprite is handed over to the core: it registers them
@@ -198,7 +203,7 @@ module tb_lock_sprite;
                     3: begin s_bpp[j] <= $random; s_depth[j] <= $random; s_pal[j] <= $random; end   // bpp 3 too: undefined, but software can write it
                     4: s_xstep[j]  <= ({$random} % 4 == 0) ? $random : 16'h0400 + ({$random} % 16'h1800);
                     5: s_ystep[j]  <= ({$random} % 4 == 0) ? $random : 16'h0400 + ({$random} % 16'h1800);
-                    default: begin
+                    default: if (!m_hold) begin
                         lst_wr <= 1'b1;  lst_new <= {$random} & ((1 << PW) - 1);
                     end
                 endcase
@@ -207,7 +212,7 @@ module tb_lock_sprite;
             if (r[15:8] == 8'd2 && r[19:16] == 4'd0) dma_mask <= $random | 8'h0F;  // sprites 0-3 always on the DMA
             if (r[15:8] == 8'd3 && r[19:16] == 4'd0) dma_on <= ~dma_on;
             if (cyc == 40) start <= 8'hFF;                                        // every sprite starts
-            if (r[15:8] == 8'd4) begin dat_wr <= 1'b1; dat <= $random; end
+            if (r[15:8] == 8'd4 && !m_hold) begin dat_wr <= 1'b1; dat <= $random; end
             if (r[15:8] == 8'd5) coll_clr <= $random;
             if (r[15:8] == 8'd6) begin coll_line <= $random; end
             if (r[15:8] == 8'd7 && r[16]) coll_t <= ~coll_t;

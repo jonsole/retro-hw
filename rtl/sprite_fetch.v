@@ -244,8 +244,8 @@ module sprite_fetch #(
         bs    = ({3'd0, srcs} << (bpp3 + 1'b1)) + 21'd15;
         if (upd_d[1]) begin
             wf[c3]  <= (bf[20:4] > 17'd4095) ? 12'd4095 : bf[15:4];
-            wv[c3]  <= (srcs == 18'd0) ? 12'd0 : (bs[20:4] > bf[20:4]) ? ((bf[20:4] > 17'd4095) ? 12'd4095 : bf[15:4])
-                                     : (bs[20:4] > 17'd4095) ? 12'd4095 : bs[15:4];
+            // (the shown width is never more than the window's, so wv <= wf)
+            wv[c3]  <= (srcs == 18'd0) ? 12'd0 : (bs[20:4] > 17'd4095) ? 12'd4095 : bs[15:4];
         end
     end
 
@@ -394,16 +394,29 @@ module sprite_fetch #(
 
     // The FIFOs (the word's high half holds the first pixels)
     wire [15:0] mem_word = (LITTLE != 0) ? {mem_rdata[7:0], mem_rdata[15:8]} : mem_rdata;
+    // A hand-fed word is held and goes in on the first clock with no word
+    // from memory, so every FIFO takes its data from one two-way choice
+    reg         m_p = 1'b0;                    // a hand-fed word waits
+    reg  [2:0]  m_s;
+    reg  [15:0] m_d;
+    wire        m_go = m_p && !mem_rvalid;
+    wire [15:0] fwd  = (MANUAL != 0 && !mem_rvalid) ? m_d : mem_word;
+    always @(posedge clk) begin
+        if (rst || MANUAL == 0) m_p <= 1'b0;
+        else if (dat_wr)        m_p <= 1'b1;
+        else if (m_go)          m_p <= 1'b0;
+        if (dat_wr) begin m_s <= sel; m_d <= dat; end
+    end
     generate for (g = 0; g < 8; g = g + 1) begin : fifos
         if (g < NS) begin : on
             reg [15:0] mem [0:31];
-            always @(posedge clk) if (dma_wr[g] || man_wr[g]) mem[wp[g][4:0]] <= man_wr[g] ? dat : mem_word;
+            always @(posedge clk) if (dma_wr[g] || man_wr[g]) mem[wp[g][4:0]] <= fwd;
             assign fifo_rd[16*g +: 16] = mem[fifo_ra[5*g +: 5]];
         end else begin : off
             assign fifo_rd[16*g +: 16] = 16'd0;
         end
         assign dma_wr[g] = !rst && mem_rvalid && q_s[q_h] == g && q_e[q_h] == epoch[g] && !flushing[g] && !restart[g];
-        assign man_wr[g] = (MANUAL != 0) && g < NS && !rst && dat_wr && sel == g
+        assign man_wr[g] = (MANUAL != 0) && g < NS && !rst && m_go && m_s == g
                            && !active[g] && !flushing[g] && cnt[g] < 6'd32;
         always @(posedge clk) wpg[g] <= wp[g] ^ (wp[g] >> 1);
         assign wp_g[6*g +: 6] = wpg[g];
