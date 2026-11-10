@@ -124,7 +124,7 @@ All ports are in the system clock domain unless the table says otherwise. A stro
 ### 4.7 Feeding by hand (`MANUAL`)
 
 - With `MANUAL` 1, a `dat_wr` takes `dat` and `sel`, and the word is written at the back of that sprite's FIFO on the first later clock in which no word comes back from memory (`mem_rvalid` 0): usually the next clock. It is written if the sprite is built, its DMA is off (`p_dma` 0), it is not being flushed, and the FIFO holds fewer than 32 words at that clock. Otherwise the word is dropped.
-- One word waits at a time: a `dat_wr` while an earlier word still waits replaces it. `dat_wr` strobes in successive clocks are all written unless memory words come back in between, so a CPU's writes, several clocks apart, are safe.
+- **Limitation: one word waits at a time.** A `dat_wr` while an earlier word still waits replaces it, and the earlier word is lost with no sign. A word waits only while memory words come back, so one writer whose writes are several clocks apart (a CPU) is safe. Two writers that can strobe `dat_wr` in successive clocks (a CPU and a copper, say) must not both feed sprites by hand at the same time: the core has no busy signal to hold the second.
 - `fifo_count` is the words in sprite `sel`'s FIFO, from a read pointer a few clocks old.
 
 ### 4.8 Reset

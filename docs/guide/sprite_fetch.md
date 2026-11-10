@@ -85,6 +85,7 @@ fetching        no ....................yes, from the next line in the window
 - **HSTART at least 16.** The pixel side takes the settings at beam pixel 12, after the line-start pass.
 - **The line start moves.** Reading it back gives the start of the line being drawn, not the value you wrote. A write makes the next shown line start exactly there.
 - **Starting empties the FIFO.** So does the vertical blank, for every sprite. Start the sprites again each frame (a copper list or the vertical blank interrupt).
+- **One hand-fed word at a time.** With `MANUAL`, a `dat_wr` word goes into its FIFO a clock or more later, and a second `dat_wr` before it has gone in replaces it silently. One writer with writes several clocks apart is safe. Don't let two writers (a CPU and a copper) feed sprites by hand at the same time.
 - **Sprites not built.** For a sprite at or above `NS`, tie its `flush_ack_t` to its `flush_t` and its `rp` to 0.
 - **Beam in the right domain.** `beam_h` and `beam_v` must be the system clock's view of the beam. Cross them carefully (for example, sample until two samples agree).
 - **Collision clear.** `coll_clr` is a mask for one clock, not a level.
