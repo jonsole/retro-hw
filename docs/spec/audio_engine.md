@@ -1,6 +1,6 @@
 # Audio engine (audio_engine)
 
-Status: **draft**, revision 2, reviewed by both machines (their points are in; see U8). Not yet seen by Jon. `rtl/audio_engine.v` implements it and passes its model test; no Vivado build yet. From retro68k's `fpga/rtl/audio.v` and its spec 6 (branch `live-ctrl`, 6955b38): the same sound, sample for sample, with the registers' bus, the interrupt and the DACs left to the machine.
+Status: **draft**, revision 3: Jon's decisions are in (U1, U11), after both machines' review of revision 2 (U8). It locks when its PR merges, which needs both machines' review of this revision and their Vivado builds. `rtl/audio_engine.v` implements it and passes its model test. From retro68k's `fpga/rtl/audio.v` and its spec 6 (branch `live-ctrl`, 6955b38): the same sound but for interpolation across a block's end (4.3), with the registers' bus, the interrupt and the DACs left to the machine.
 
 The audio engine plays sample channels from memory, in the spirit of the Amiga's Paula. Each channel plays a block of 8- or 16-bit samples at any pitch, with its own left and right volume, and needs no CPU work while it plays. At the end of a block a channel takes its address and length again, so a sample loops, or the next one can be queued. Once every output sample the engine visits the channels in turn, reads the one or two words each needs, and puts out one signed stereo sample.
 
@@ -33,7 +33,7 @@ All inputs are sampled on the rising edge of `clk`. "Strobe" means high for one 
 |------|-----|-------|---------|--------|
 | `clk` | in | 1 | The clock | |
 | `rst` | in | 1 | Reset: every channel stopped, no request, output 0. The channel settings are not changed (4.9) | Synchronous |
-| `rate` | in | 16 | Clocks per output sample. Values below 200 act as 200 | Level; used when each output sample starts |
+| `rate` | in | 16 | Clocks per output sample; 0 is 65 536. There is no floor: a rate shorter than the engine's work makes each sample begin as the one before ends (4.7) | Level; used when each output sample starts |
 | `start` | in | `NCH` | Bit n: channel n starts, or starts again, from its settings at the next output sample | Strobe |
 | `stop` | in | `NCH` | Bit n: channel n stops (4.2), and a start not yet taken is forgotten. `stop` wins over `start` in the same clock | Strobe |
 | `on` | out | `NCH` | Bit n: channel n is playing | Register |
@@ -102,7 +102,7 @@ One requester on the scheduler, as the blitter's port but reads only.
 
 ### 4.1 An output sample
 
-Every `rate` clocks (at least 200) the engine makes one output sample:
+Every `rate` clocks the engine makes one output sample:
 
 1. The channels are worked on in order, 0 first. As the engine begins a channel, a start waiting for it is taken (4.2).
 2. A playing channel's sample is read and interpolated (4.3, 4.4), multiplied by its two volumes and added to the left and right sums; then its position moves on (4.5). A channel not playing adds nothing.
@@ -120,7 +120,9 @@ So software loops a sample by writing LC and LEN once; plays a sample with a loo
 
 ### 4.3 Reading samples
 
-A channel at sample i of its block (the position's whole part) needs s0, sample i, and s1, sample i + 1. At the block's last sample s1 is s0. With `NEAREST` (or without `INTERP`) only s0 is needed.
+A channel at sample i of its block (the position's whole part) needs s0, sample i, and s1, sample i + 1. With `NEAREST` (or without `INTERP`) only s0 is needed.
+
+At the block's last sample, s1 is the first sample of the block to come: the sample at LC as the register stands when the engine reads this channel's samples, in the channel's format. So a loop interpolates round its join, and a queued block is joined to the one before. A one-shot channel, or one whose LEN register is 0 then, has no block to come: its s1 is s0. If software writes LC between that output sample and the block's real end, the block taken is the new one; the safe time to write is just after an `ev` (2.2).
 
 - **8-bit** (`BITS16` 0): sample i is the byte at LC + i, shifted up by 8. In the word at byte address a & ~1, the byte at an even address is the high byte with `LE` 0 and the low byte with `LE` 1.
 - **16-bit** (`BITS16` 1): sample i is the word at LC + 2i. LC's bit 0 is ignored.
@@ -155,8 +157,10 @@ when an output sample begins:
         on[n] = (LEN[n] ≠ 0);  ev[n]
       if on[n]:
         i  = pos[n] >> 16;   frac = pos[n] & 0xFFFF
-        i1 = (i + 1 < blk_len[n]) ? i + 1 : i
-        s0 = sample(n, i);   s1 = sample(n, i1)
+        s0 = sample(n, i)
+        if i + 1 < blk_len[n]:             s1 = sample(n, i + 1)
+        else if ONESHOT[n] or LEN[n] = 0:  s1 = s0
+        else:                              s1 = the first sample at LC[n] (BITS16[n]: the word at LC[n]; else the byte at LC[n], << 8)
         s  = (NEAREST[n] or not INTERP) ? s0 : s0 + (((s1 − s0) × frac) >> 16)
         L += s × VOLL[n];    R += s × VOLR[n]
         p = pos[n] + STEP[n]
@@ -174,14 +178,14 @@ when an output sample begins:
 sample(n, i) = BITS16[n] ? the word at blk_lc[n] + 2i  :  the byte at blk_lc[n] + i, << 8
 ```
 
-- CTRL (`BITS16`, `NEAREST`, `ONESHOT`), STEP and VOL above are the values taken when the engine began channel n in this output sample; LC and LEN are the values in the core in the clock the block is taken.
+- CTRL (`BITS16`, `NEAREST`, `ONESHOT`), STEP and VOL above are the values taken when the engine began channel n in this output sample; LC and LEN are the values in the core in the clock the block is taken, and, for s1 at a block's last sample, in the clock the engine works out the channel's addresses (after it began the channel, before its first read).
 - "if on[n]" is `on` as it stood when the engine began channel n: a stop after that does not undo the channel's work in this output sample, but `on` stays 0 whatever the work does.
 - POS reads `pos[n] >> 16`.
 - Addresses and positions are `AW` + 1 bits and wrap.
 
 ### 4.7 Time
 
-Each output sample takes a few clocks a channel besides its reads. With four channels and a memory that answers within about 20 clocks, 200 clocks are enough; a machine with a slower memory sets `rate` higher. If the engine has not finished when the next output sample is due, that sample begins when it has, and the one after it `rate` clocks later. (retro68k's unit dropped the late sample; neither machine can be late.)
+Each output sample takes about 12 clocks a playing channel besides its reads. With four channels and a memory that answers within about 20 clocks, 200 clocks are enough; a machine sets `rate` to at least what its memory needs. If the engine has not finished when the next output sample is due, that sample begins when it has, and the one after it `rate` clocks later: so a `rate` too small for the engine gives samples as fast as it can make them, at a rate that depends on the memory. (retro68k's unit had a floor of 200 and dropped a late sample.)
 
 ### 4.8 Sequence
 
@@ -206,8 +210,8 @@ Each output sample takes a few clocks a channel besides its reads. With four cha
 
 | Test | What it checks |
 |------|----------------|
-| `test/audio_engine`, random | The core against a bit-exact model of 4.6: random settings, blocks, steps below and above 1, 8- and 16-bit, odd addresses, nearest and interpolated, one-shots, queued blocks written at `ev`, starts while playing, stops at every point of the engine's work (the bench watches where the engine is), writes and reads during an output sample, a memory that is quick or slow. Every output sample, every `ev` and `on` are compared. Both byte orders, `NCH` 4 and 2, `INTERP` 0 |
-| `test/audio_engine`, targeted | A stop in the very clock the engine begins a channel, with a start waiting and without; a reset. Eight deliberate faults in the core are each caught |
+| `test/audio_engine`, random | The core against a bit-exact model of 4.6: random settings, blocks, steps below and above 1, 8- and 16-bit, odd addresses, nearest and interpolated, one-shots, queued blocks written at `ev`, starts while playing, stops at every point of the engine's work (the bench watches where the engine is), writes and reads during an output sample, rates down to 1, the join at a block's end for loops, queues, one-shots and a length of 0, a memory that is quick or slow. Every output sample, every `ev` and `on` are compared. Both byte orders, `NCH` 4 and 2, `INTERP` 0 |
+| `test/audio_engine`, targeted | A stop in the very clock the engine begins a channel, with a start waiting and without; a reset. Twelve deliberate faults in the core are each caught |
 | retro68k's own audio test | Its golden case (`sim/atest`: four channels at once with queued blocks, a one-shot, a restart and an enable turned off and on) runs against the core once its wrapper is ported |
 | `drivers.sh`, the machines | As for the other cores |
 
@@ -215,13 +219,14 @@ Each output sample takes a few clocks a channel besides its reads. With four cha
 
 | # | Point |
 |---|-------|
-| U1 | Choices made in this draft, for review: the channel settings live in the core (so they can be a small RAM and one shared datapath: retro68k's trial saved about 370 LUTs this way) and are written through a port with byte enables; they are not reset; no pan defaults in the core; status, interrupt enables, the enables' edges and the DACs are the wrapper's; `rate` is a port |
+| U1 | Choices made in this draft, agreed by Jon (10 November 2026): the channel settings live in the core (so they can be a small RAM and one shared datapath: retro68k's trial saved about 370 LUTs this way) and are written through a port with byte enables; they are not reset; no pan defaults in the core; status, interrupt enables, the enables' edges and the DACs are the wrapper's; `rate` is a port |
 | U2 | 8-bit samples are a per-channel setting, as on retro68k, not a build parameter. A build of 8-bit only would save little |
 | U3 | LC, LEN and POS are `AW` + 1 bits (the byte address space). retro68k's registers are 23 bits with `AW` 21: its top bit would read 0 |
 | U4 | Read-back is a parameter. With the one-clock registered read it shares the engine's read of the settings, so it should cost far less than the 138 LUTs of retro68k's trial; to be measured. Without it POS cannot be read |
 | U5 | The multiplies: retro68k's unit uses three (interpolation, left, right). The core uses one in turn, as `geom` does: about 12 clocks a channel besides its reads |
-| U6 | Carried over from retro68k's open points: interpolating across the end of a block into the next (s1 is s0 at a block's last sample now) |
+| U6 | Done in revision 3: interpolation across a block's end (retro68k's open point A2). retro68k's golden test numbers change at block ends; its model takes the same rule |
 | U7 | More than 4 channels would need a wider sum, and a different shift or a limiter: four full-scale channels at volume 64 just fill 16 bits. Not in this revision |
 | U8 | From the machines' review of revision 1: settings taken once a channel a sample; a one-clock registered read (both buses answer a clock after the strobe); one exact rule for a stop during the engine's work, the simplest to build, not retro68k's; the second read only when needed; a late engine delays the sample; the note on writing LC and LEN |
 | U9 | retro68k's spec 6 gives reset values for VOL and STEP; with this core its start-up code writes them. Jon's call for retro68k |
-| U10 | Size, Yosys for 7-series (logic cells; besides them 35 RAM32M, about 140 LUTs, and one DSP block in every build): defaults 436 and 332 flip-flops; `RDBACK` 0: 384; `INTERP` 0: 327; `NCH` 2: 425; `NCH` 2 with `INTERP` 0 and `RDBACK` 0: 243. Vivado figures from the machines' gates to come. retro68k's unit is 1,228 LUTs in Vivado |
+| U11 | Jon's decisions for revision 3: interpolation across block ends, always; `rate` with no floor, 0 meaning 65 536; no loop registers, no gain input or limiter, no volume smoothing, 4.16 steps, one `ev` a channel, plain reads with no cache or urgent mark; a start restarts a playing channel; enables stay in the wrapper; `out_l`, `out_r` and `out_v` are the hook for a later HDMI audio block; the spec locks at merge |
+| U10 | Size (of revision 2; revision 3 adds one address choice, about 18 cells), Yosys for 7-series (logic cells; besides them 35 RAM32M, about 140 LUTs, and one DSP block in every build): defaults 436 and 332 flip-flops; `RDBACK` 0: 384; `INTERP` 0: 327; `NCH` 2: 425; `NCH` 2 with `INTERP` 0 and `RDBACK` 0: 243. Vivado figures from the machines' gates to come. retro68k's unit is 1,228 LUTs in Vivado |

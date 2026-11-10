@@ -31,7 +31,7 @@ module audio_engine #(
     input  wire            clk,
     input  wire            rst,            // every channel stopped; the settings stay
 
-    input  wire [15:0]     rate,           // clocks per output sample (below 200: 200)
+    input  wire [15:0]     rate,           // clocks per output sample (0: 65536)
     input  wire [NCH-1:0]  start,          // strobes: start (again) at the next output sample
     input  wire [NCH-1:0]  stop,           // strobes: stop; wins over start
     output reg  [NCH-1:0]  on,             // playing
@@ -146,7 +146,6 @@ module audio_engine #(
     reg  signed [33:0] mp;                     // ... and its product, a clock later
     reg  signed [23:0] acc_l, acc_r;
 
-    wire [15:0]     rate_c = (rate < 16'd200) ? 16'd200 : rate;
     wire            b16    = c_ctrl[0];
     wire            near   = (INTERP == 0) || c_ctrl[1];
 
@@ -155,7 +154,10 @@ module audio_engine #(
     wire [BW-1:0]   ipn  = ip + 1'b1;
     wire [BW-1:0]   ip1  = (ipn < p_len) ? ipn : ip;
     wire [BW-1:0]   pa0  = p_lc + (b16 ? {ip[BW-2:0], 1'b0}  : ip);
-    wire [BW-1:0]   pa1  = p_lc + (b16 ? {ip1[BW-2:0], 1'b0} : ip1);
+    // At a block's last sample s1 is the first sample of the block to come:
+    // the one at the address register now (not for a one-shot, or a length of 0)
+    wire            xend = !(ipn < p_len) && !c_ctrl[2] && (q_len != {BW{1'b0}});
+    wire [BW-1:0]   pa1  = xend ? q_lc : p_lc + (b16 ? {ip1[BW-2:0], 1'b0} : ip1);
     function signed [15:0] pick(input [15:0] w, input odd, input b16_);
         pick = b16_ ? w : {(odd == (LE == 0)) ? w[7:0] : w[15:8], 8'd0};
     endfunction
@@ -190,7 +192,7 @@ module audio_engine #(
             // an output sample, which reads nothing: the period stays exact)
             if (!stall || es == E_IDLE) case (es)
                 E_IDLE: if (cnt == 16'd0) begin
-                    cnt   <= rate_c - 1'b1;
+                    cnt   <= rate - 1'b1;
                     acc_l <= 24'sd0;
                     acc_r <= 24'sd0;
                     ch    <= 2'd0;

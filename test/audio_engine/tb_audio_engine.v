@@ -80,7 +80,7 @@ module tb_audio_engine;
 
     integer errors = 0, cyc = 0;
     integer n_out = 0, n_take = 0, n_wrap = 0, n_shot = 0, n_two = 0, n_stopmid = 0, n_late = 0, n_rb = 0,
-            n_len0 = 0, n_stoptake = 0, n_near = 0, n_b8 = 0, n_period = 0, n_over = 0;
+            n_len0 = 0, n_stoptake = 0, n_near = 0, n_b8 = 0, n_period = 0, n_over = 0, n_xend = 0;
     task fail(input [8*14-1:0] what, input integer got, input integer want);
         begin
             errors = errors + 1;
@@ -117,7 +117,7 @@ module tb_audio_engine;
     reg [15:0]     fr;
     reg [BW+15:0]  p;
     integer        s0, s1, s;
-    reg            nearm, tk;
+    reg            nearm, tk, xe;
 
     always @(posedge clk) if (!rst) begin
         cyc = cyc + 1;
@@ -132,7 +132,7 @@ module tb_audio_engine;
                         n_period = n_period + 1;
                         if (cyc - last_begin != last_rate) fail("period", cyc - last_begin, last_rate);
                     end else if (last_begin >= 0) n_late = n_late + 1;
-                    last_begin = cyc;  last_rate = (rate < 16'd200) ? 200 : rate;  was_early = 1'b0;
+                    last_begin = cyc;  last_rate = (rate == 16'd0) ? 65536 : rate;  was_early = 1'b0;
                 end else was_early = 1'b1;
                 E_CH: begin
                     c_ctrl = m_ctrl[n];
@@ -152,13 +152,17 @@ module tb_audio_engine;
                         if (b_len[n] == 0) n_len0 = n_len0 + 1;
                     end
                     m_run = tk ? (b_len[n] != 0) : (m_on[n] && !stop[n]);
-                    if (m_run) begin
+                end
+                E_GO: if (!m_run) fail("ran a stopped", 1, 0); else begin
                         i0 = m_pos[n][BW+15:16];
                         fr = m_pos[n][15:0];
                         i1 = (((i0 + 1'b1) & BM) < b_len[n]) ? i0 + 1'b1 : i0;
                         nearm = (INTERP == 0) || c_ctrl[1];
                         s0 = sample(b_lc[n], i0, c_ctrl[0]);
-                        s1 = sample(b_lc[n], i1, c_ctrl[0]);
+                        // at the block's last sample: on to the first sample at the address register now
+                        xe = !(((i0 + 1'b1) & BM) < b_len[n]) && !c_ctrl[2] && (m_len[n][BW-1:0] != 0);
+                        if (xe && !nearm) n_xend = n_xend + 1;
+                        s1 = xe ? sample(m_lc[n][BW-1:0], 0, c_ctrl[0]) : sample(b_lc[n], i1, c_ctrl[0]);
                         if (nearm) s = s0;
                         else begin : ip
                             reg signed [63:0] wide;
@@ -170,7 +174,7 @@ module tb_audio_engine;
                         L = L + s * c_vl;
                         R = R + s * c_vr;
                         a0 = addr_of(b_lc[n], i0, c_ctrl[0]);
-                        a1 = addr_of(b_lc[n], i1, c_ctrl[0]);
+                        a1 = xe ? m_lc[n][BW-1:0] : addr_of(b_lc[n], i1, c_ctrl[0]);
                         rq[rq_w % 8] = a0[BW-1:1];  rq_w = rq_w + 1;
                         if (!nearm && a1[BW-1:1] != a0[BW-1:1]) begin
                             rq[rq_w % 8] = a1[BW-1:1];  rq_w = rq_w + 1;
@@ -178,9 +182,7 @@ module tb_audio_engine;
                         end
                         if (nearm) n_near = n_near + 1;
                         if (!c_ctrl[0]) n_b8 = n_b8 + 1;
-                    end
                 end
-                E_GO: if (!m_run) fail("ran a stopped", 1, 0);
                 E_ADV: begin
                     if (!m_run) fail("moved a stopped", 1, 0);
                     p = m_pos[n] + c_step;
@@ -314,7 +316,7 @@ module tb_audio_engine;
                 set_be = ({$random} % 3 == 0) ? $random : 3'b111;
             end
             if ({$random} % 30 == 0) begin rb_re = 1'b1; rb_ch = {$random} % NCH; rb_f = {$random} % 8; end
-            if ({$random} % 1500 == 0) rate = ({$random} % 4 == 0) ? {$random} % 400 : 16'd200 + ({$random} % 80);
+            if ({$random} % 1500 == 0) rate = ({$random} % 6 == 0) ? 16'd1 + ({$random} % 150) : 16'd200 + ({$random} % 80);
             if ({$random} % 2500 == 0) slow = ({$random} % 3 == 0) ? 70 : ({$random} % 3 == 0) ? 12 : 0;
         end
         @(negedge clk);
@@ -323,10 +325,10 @@ module tb_audio_engine;
         @(negedge clk); rst = 1'b1;
         @(negedge clk);
         if (on !== {NCH{1'b0}} || out_l !== 16'sd0 || out_r !== 16'sd0 || mem_req !== 1'b0) fail("reset", on, 0);
-        $display("NCH=%0d LE=%0d INTERP=%0d RDBACK=%0d: %0d output samples (%0d on time, %0d late), %0d blocks taken at a start (%0d of length 0), %0d block ends (%0d past the next block too), %0d one-shots ended, %0d second reads, %0d nearest, %0d 8-bit, %0d stops while the engine worked on the channel, %0d stops as a start was to be taken, %0d read-backs",
-                 NCH, LE, INTERP, RDBACK, n_out, n_period, n_late, n_take, n_len0, n_wrap, n_over, n_shot, n_two, n_near, n_b8, n_stopmid, n_stoptake, n_rb);
+        $display("NCH=%0d LE=%0d INTERP=%0d RDBACK=%0d: %0d output samples (%0d on time, %0d late), %0d blocks taken at a start (%0d of length 0), %0d block ends (%0d past the next block too), %0d one-shots ended, %0d second reads, %0d nearest, %0d 8-bit, %0d stops while the engine worked on the channel, %0d stops as a start was to be taken, %0d read-backs, %0d samples interpolated across a block's end",
+                 NCH, LE, INTERP, RDBACK, n_out, n_period, n_late, n_take, n_len0, n_wrap, n_over, n_shot, n_two, n_near, n_b8, n_stopmid, n_stoptake, n_rb, n_xend);
         if (n_out < 500 || n_period < 100 || (NCH == 4 && INTERP != 0 && n_late == 0) || n_take < 100 || n_len0 == 0 || n_wrap < 100 || n_over == 0 || n_shot == 0
-            || (INTERP != 0 && n_two == 0) || n_near == 0 || n_b8 == 0 || n_stopmid == 0 || n_stoptake == 0 || (RDBACK != 0 && n_rb == 0)) begin
+            || (INTERP != 0 && n_two == 0) || n_near == 0 || n_b8 == 0 || (INTERP != 0 && n_xend < 50) || n_stopmid == 0 || n_stoptake == 0 || (RDBACK != 0 && n_rb == 0)) begin
             errors = errors + 1;
             $display("ERROR: a case never came up");
         end
