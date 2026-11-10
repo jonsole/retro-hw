@@ -1,418 +1,386 @@
-// Unit test for the blitter: directed jobs against a memory model.
-// The testbench is the wrapper: it keeps each channel's job in plain
-// arrays and puts the running channel's on the job ports while the core
-// sets it up. Memory answers after a random wait, reads come back in order
-// a few clocks later. Each job's result is checked byte by byte against a
-// model of the pixels. Run with LE = 0 and LE = 1 (-DLE=1), LINE and
-// EDGES built; and with them left out (-DLINES=0), where OP 2 and OP 3
-// must be errors.
 `timescale 1ns/1ps
-`ifndef LE
-`define LE 0
-`endif
-`ifndef LINES
-`define LINES 1
-`endif
+// The blitter against a pixel-exact model of its spec (docs/spec/blitter.md
+// 4.8). The test bench is the wrapper: it holds the job as 8 long words (its
+// own descriptor format), decodes them onto the job ports, and stores the
+// long words the core hands over on a descriptor load. Memory answers
+// after random waits and reads come back in order a few clocks later.
+//
+// For every job the model works the pixels one by one, in the order the
+// spec gives, on its own copy of the memory, and notes every byte that
+// holds a pixel of the job. The core's writes must only touch those bytes,
+// and after the job the two memories must be equal.
+//
+// Random jobs: every depth, bit position, mask kind, minterm, direction and
+// stride sign, constant and memory B, with source, mask and destination
+// apart. Directed: overlapping copies in the four directions, chains with
+// an empty job, access counts, stop, enable held low, the errors.
 module tb_blitter;
-    localparam LE = `LE;
-    localparam LINES = `LINES;
-    reg clk = 0, rst = 1;
+    parameter LE = 0;
+    parameter MASKIMG = 1;
+    localparam AW = 15;                      // 64 KB of memory
+
+    reg clk = 1'b0;
     always #5 clk = ~clk;
+    reg rst = 1'b1;
 
-    // ---------------------------------------------------------------- the jobs, per channel
-    reg [2:0]  c_op [0:3];   reg [7:0]  c_mt [0:3];   reg c_sat [0:3]; reg c_sgn [0:3];
-    reg [1:0]  c_mask [0:3]; reg [1:0]  c_lb [0:3];   reg c_desc [0:3]; reg c_irq [0:3]; reg c_bc [0:3];
-    reg        c_ymaj [0:3]; reg c_xneg [0:3]; reg c_yneg [0:3];
-    reg [31:0] c_val [0:3];  reg [15:0] c_bstr [0:3]; reg [15:0] c_dstr [0:3];
-    reg [23:0] c_w [0:3];    reg [15:0] c_h [0:3];
-    reg [23:0] c_a [0:3];    reg [23:0] c_b [0:3];    reg [23:0] c_d [0:3];
-    reg [2:0]  c_abit [0:3]; reg [2:0]  c_bbit [0:3]; reg [2:0]  c_dbit [0:3];
-    reg [23:0] c_next [0:3]; reg c_bport [0:3]; reg c_dport [0:3];
+    // ---------------------------------------------------------------- the wrapper
+    reg  [31:0] jr [0:7];                    // the job, as 8 long words
+    // L0: {minterm, mask, bpp, rtl, bconst, irq, bad}, value    L1: height, {key, 8'b0}
+    // L2: astride, bstride    L3: dstride, width
+    // L4: {5'b0, abit, aaddr}    L5: {5'b0, bbit, baddr}    L6: {5'b0, dbit, daddr}    L7: next
+    wire [7:0]  job_minterm = jr[0][31:24];
+    wire [1:0]  job_mask    = jr[0][23:22];
+    wire [1:0]  job_bpp     = jr[0][21:20];
+    wire        job_rtl     = jr[0][19];
+    wire        job_bconst  = jr[0][18];
+    wire        job_irq     = jr[0][17];
+    wire        job_bad     = jr[0][16];
+    wire [15:0] job_value   = jr[0][15:0];
+    wire [15:0] job_height  = jr[1][31:16];
+    wire [7:0]  job_key     = jr[1][15:8];
+    wire [15:0] job_astride = jr[2][31:16];
+    wire [15:0] job_bstride = jr[2][15:0];
+    wire [15:0] job_dstride = jr[3][31:16];
+    wire [15:0] job_width   = jr[3][15:0];
+    wire [2:0]  job_abit    = jr[4][26:24];
+    wire [23:0] job_aaddr   = jr[4][23:0];
+    wire [2:0]  job_bbit    = jr[5][26:24];
+    wire [23:0] job_baddr   = jr[5][23:0];
+    wire [2:0]  job_dbit    = jr[6][26:24];
+    wire [23:0] job_daddr   = jr[6][23:0];
+    wire [23:0] job_next    = jr[7][23:0];
 
-    reg [2:0]  job_op;   reg [7:0]  job_minterm; reg job_sat, job_signed;
-    reg [1:0]  job_mask, job_bpp; reg job_desc, job_irq, job_bconst, job_ymaj, job_xneg, job_yneg;
-    reg [31:0] job_value; reg [15:0] job_bstride, job_dstride, job_height;
-    reg [23:0] job_width, job_aaddr, job_baddr, job_daddr, job_next;
-    reg [2:0]  job_abit, job_bbit, job_dbit; reg job_bport, job_dport;
-    reg [15:0] clip_xmin = 16'h8000, clip_xmax = 16'h7FFF, clip_ymin = 16'h8000, clip_ymax = 16'h7FFF;
-
-    reg  [3:0]  start_ld = 0, start_run = 0, stop = 0, clr_done = 0, clr_err = 0, pause = 0, da_we = 0;
+    reg         enable = 1'b1, start_ld = 0, start_run = 0, stop = 0, da_we = 0;
     reg  [23:0] da_d = 0;
-    wire [3:0]  busy, done, err, irq_set;
-    wire [95:0] da_q, ea_q;
-    wire        idle, su_v, dl_v;
-    wire [1:0]  cur;
+    wire [23:0] da_q;
+    wire        busy, done, err, su_v, dl_v, mem_req, mem_we;
     wire [2:0]  su_i, dl_i;
-    wire [15:0] dl_w0, dl_w1;
+    wire [15:0] dl_w0, dl_w1, mem_wdata;
+    wire [AW-1:0] mem_addr;
+    wire [1:0]  mem_be;
+    reg         dl_wait = 0, mem_ack = 0, mem_rvalid = 0;
+    reg  [15:0] mem_rdata = 0;
 
-    // ---------------------------------------------------------------- memory: 16 KB on the memory port,
-    // 2 KB on the other port at word 0x10000
-    reg  [15:0] mem [0:8191];
-    reg  [15:0] xmem [0:1023];
-    wire        mem_req, mem_we, xp_req, xp_we;
-    wire [21:1] mem_addr;
-    wire [22:0] xp_addr, acc_a;
-    wire [15:0] mem_wdata, xp_wdata;
-    wire [1:0]  mem_be, xp_be;
-    wire        acc_we;
-    reg         gnt = 0, xgnt = 0;
-    wire        mem_ack = mem_req && gnt;
-    wire        xp_ack  = xp_req && xgnt;
-    wire        xp_ok   = acc_a >= 23'h10000 && acc_a < 23'h10400;
-    // reads back in order, 2-5 clocks after they are taken
-    reg  [15:0] q_d [0:63];  reg [31:0] q_t [0:63];  reg q_x [0:63];
-    integer     q_w = 0, q_r = 0, now = 0;
-    reg         mem_rvalid = 0, xp_rvalid = 0;
-    reg  [15:0] mem_rdata = 0, xp_rdata = 0;
-    always @(posedge clk) begin
-        now = now + 1;
-        gnt  <= ($random & 3) != 0;
-        xgnt <= ($random & 1) != 0;
-        mem_rvalid <= 1'b0; xp_rvalid <= 1'b0;
-        if (q_r != q_w && q_t[q_r % 64] <= now) begin
-            if (q_x[q_r % 64]) begin xp_rvalid <= 1'b1; xp_rdata <= q_d[q_r % 64]; end
-            else begin mem_rvalid <= 1'b1; mem_rdata <= q_d[q_r % 64]; end
-            q_r = q_r + 1;
-        end
-        if (mem_ack) begin
-            if (mem_addr >= 21'd8192) begin $display("FAIL: memory port address %h", mem_addr); $finish; end
-            if (mem_we) begin
-                if (mem_be[1]) mem[mem_addr][15:8] <= mem_wdata[15:8];
-                if (mem_be[0]) mem[mem_addr][7:0]  <= mem_wdata[7:0];
-            end else begin
-                q_d[q_w % 64] = mem[mem_addr]; q_t[q_w % 64] = now + 1 + ($random & 3); q_x[q_w % 64] = 0;
-                q_w = q_w + 1;
-            end
-        end
-        if (xp_ack) begin
-            if (xp_we) begin
-                if (xp_be[1]) xmem[xp_addr - 23'h10000][15:8] <= xp_wdata[15:8];
-                if (xp_be[0]) xmem[xp_addr - 23'h10000][7:0]  <= xp_wdata[7:0];
-            end else begin
-                q_d[q_w % 64] = xmem[xp_addr - 23'h10000]; q_t[q_w % 64] = now + 1 + ($random & 3); q_x[q_w % 64] = 1;
-                q_w = q_w + 1;
-            end
-        end
-    end
-
-    // ---------------------------------------------------------------- the FIFO of a port job
-    reg  [7:0] rxq [0:63]; integer rx_w = 0, rx_r = 0;
-    reg  [7:0] txq [0:63]; integer tx_n = 0;
-    reg        txr = 0;
-    wire       p_rxpop, p_txpush;
-    wire [7:0] p_txd;
-    always @(posedge clk) begin
-        txr <= ($random & 1) != 0;
-        if (p_rxpop) rx_r <= rx_r + 1;
-        if (p_txpush) begin txq[tx_n] = p_txd; tx_n = tx_n + 1; end
-    end
-
-    blitter #(.CHIP_WORDS(24'd8192), .LE(LE), .MASKIMG(1), .XPORT(1), .PORTJOB(1),
-               .LINE(LINES), .EDGES(LINES)) dut (
-        .clk(clk), .rst(rst),
-        .enable(1'b1), .pause(pause), .start_ld(start_ld), .start_run(start_run), .stop(stop),
-        .clr_done(clr_done), .clr_err(clr_err), .da_we(da_we), .da_d(da_d),
-        .busy(busy), .done(done), .err(err), .da_q(da_q), .ea_q(ea_q), .irq_set(irq_set), .idle(idle), .cur(cur),
+    blitter #(.AW(AW), .LE(LE), .MASKIMG(MASKIMG)) dut (
+        .clk(clk), .rst(rst), .enable(enable), .start_ld(start_ld), .start_run(start_run), .stop(stop),
+        .da_we(da_we), .da_d(da_d), .da_q(da_q), .busy(busy), .done(done), .err(err),
         .su_v(su_v), .su_i(su_i),
-        .job_op(job_op), .job_minterm(job_minterm), .job_sat(job_sat), .job_signed(job_signed),
-        .job_mask(job_mask), .job_bpp(job_bpp), .job_desc(job_desc), .job_irq(job_irq), .job_bconst(job_bconst),
-        .job_ymaj(job_ymaj), .job_xneg(job_xneg), .job_yneg(job_yneg),
-        .job_value(job_value), .job_bstride(job_bstride), .job_dstride(job_dstride),
+        .job_minterm(job_minterm), .job_mask(job_mask), .job_bpp(job_bpp), .job_rtl(job_rtl),
+        .job_bconst(job_bconst), .job_irq(job_irq), .job_value(job_value), .job_key(job_key),
+        .job_astride(job_astride), .job_bstride(job_bstride), .job_dstride(job_dstride),
         .job_width(job_width), .job_height(job_height),
         .job_aaddr(job_aaddr), .job_baddr(job_baddr), .job_daddr(job_daddr),
-        .job_abit(job_abit), .job_bbit(job_bbit), .job_dbit(job_dbit), .job_next(job_next),
-        .job_bport(job_bport), .job_dport(job_dport), .job_bad(1'b0),
-        .clip_xmin(clip_xmin), .clip_xmax(clip_xmax), .clip_ymin(clip_ymin), .clip_ymax(clip_ymax),
-        .dl_xok(1'b0), .dl_v(dl_v), .dl_i(dl_i), .dl_w0(dl_w0), .dl_w1(dl_w1), .dl_wait(1'b0),
+        .job_abit(job_abit), .job_bbit(job_bbit), .job_dbit(job_dbit), .job_next(job_next), .job_bad(job_bad),
+        .dl_v(dl_v), .dl_i(dl_i), .dl_w0(dl_w0), .dl_w1(dl_w1), .dl_wait(dl_wait),
         .mem_req(mem_req), .mem_we(mem_we), .mem_addr(mem_addr), .mem_wdata(mem_wdata), .mem_be(mem_be),
-        .mem_ack(mem_ack), .mem_rvalid(mem_rvalid), .mem_rdata(mem_rdata),
-        .acc_a(acc_a), .acc_we(acc_we), .xp_ok(xp_ok),
-        .xp_req(xp_req), .xp_we(xp_we), .xp_addr(xp_addr), .xp_wdata(xp_wdata), .xp_be(xp_be),
-        .xp_ack(xp_ack), .xp_rvalid(xp_rvalid), .xp_rdata(xp_rdata),
-        .p_rxv(rx_r != rx_w), .p_rxd(rxq[rx_r % 64]), .p_rxpop(p_rxpop), .p_txr(txr), .p_txpush(p_txpush), .p_txd(p_txd)
-    );
+        .mem_ack(mem_ack), .mem_rvalid(mem_rvalid), .mem_rdata(mem_rdata));
 
-    // The wrapper's part: the running channel's job onto the ports during
-    // set-up; a loaded descriptor's long word 0 is VALUE, 1 DPT (this
-    // testbench's own layout), and the loaded job has no next
-    integer dl_n = 0;
-    function [15:0] le16(input [15:0] w);       // a word as stored, as a little-endian number
-        le16 = (LE != 0) ? w : {w[7:0], w[15:8]};
-    endfunction
-    function [7:0] lo8(input [15:0] w);
-        lo8 = (LE != 0) ? w[7:0] : w[15:8];
-    endfunction
+    // A descriptor long word is stored a clock or two after it is handed over
     always @(posedge clk) begin
-        if (su_v && su_i == 3'd0) begin
-            job_op <= c_op[cur]; job_minterm <= c_mt[cur]; job_sat <= c_sat[cur]; job_signed <= c_sgn[cur];
-            job_mask <= c_mask[cur]; job_bpp <= c_lb[cur]; job_desc <= c_desc[cur]; job_irq <= c_irq[cur];
-            job_bconst <= c_bc[cur]; job_ymaj <= c_ymaj[cur]; job_xneg <= c_xneg[cur]; job_yneg <= c_yneg[cur];
-            job_value <= c_val[cur]; job_bstride <= c_bstr[cur]; job_dstride <= c_dstr[cur];
-            job_width <= c_w[cur]; job_height <= c_h[cur]; job_aaddr <= c_a[cur]; job_baddr <= c_b[cur];
-            job_daddr <= c_d[cur]; job_abit <= c_abit[cur]; job_bbit <= c_bbit[cur]; job_dbit <= c_dbit[cur];
-            job_next <= c_next[cur]; job_bport <= c_bport[cur]; job_dport <= c_dport[cur];
+        if (dl_v) begin jr[dl_i] <= {dl_w0, dl_w1};  dl_wait <= ({$random} % 3 == 0); end
+        else dl_wait <= 1'b0;
+    end
+
+    // ---------------------------------------------------------------- memory
+    reg [7:0] dm [0:65535];                  // the core's memory
+    reg [7:0] mm [0:65535];                  // the model's
+    reg       al [0:65535];                  // bytes the job may write
+    integer   errors = 0, n_wr = 0, n_rd = 0, n_bad_wr = 0, slow = 0, n_jobs = 0;
+    reg [15:0] rq_d [0:15];                  // reads on their way
+    reg [3:0]  rq_h = 0, rq_t = 0;
+    reg [2:0]  rq_wait = 0;
+    wire [15:0] ea = {mem_addr, 1'b0};       // the even byte's address
+    task fail(input [8*30-1:0] what, input integer a, input integer b);
+        begin
+            errors = errors + 1;
+            if (errors <= 12) $display("ERROR @%0t: %0s: %0h, %0h", $time, what, a, b);
+            if (errors <= 3)
+                $display("   job %0d: mt %h mask %0d bpp %0d rtl %b bconst %b val %h key %h w %0d h %0d a %h.%0d/%0d b %h.%0d/%0d d %h.%0d/%0d",
+                         n_jobs, jr[0][31:24], jr[0][23:22], jr[0][21:20], jr[0][19], jr[0][18], jr[0][15:0], jr[1][15:8], jr[3][15:0], jr[1][31:16],
+                         jr[4][23:0], jr[4][26:24], $signed(jr[2][31:16]), jr[5][23:0], jr[5][26:24], $signed(jr[2][15:0]),
+                         jr[6][23:0], jr[6][26:24], $signed(jr[3][31:16]));
         end
-        if (dl_v) begin
-            dl_n = dl_n + 1;
-            if (dl_i == 3'd0) c_val[cur] = {dl_w1, dl_w0};
-            if (dl_i == 3'd1) c_d[cur]   = {lo8(dl_w1), le16(dl_w0)};
-            c_next[cur] = 24'd0;
+    endtask
+    always @(posedge clk) begin
+        mem_ack    <= mem_req && !mem_ack && (slow ? ({$random} % 6 == 0) : ({$random} % 3 != 0));
+        mem_rvalid <= 1'b0;
+        if (mem_req && mem_ack) begin
+            if (mem_we) begin
+                n_wr = n_wr + 1;
+                // even byte: bits 15-8 big-endian (be[1]), bits 7-0 little-endian (be[0])
+                if (LE != 0) begin
+                    if (mem_be[0]) begin dm[ea] = mem_wdata[7:0];       if (!al[ea])          begin n_bad_wr = n_bad_wr + 1; fail("write outside the job", ea, mem_wdata); end end
+                    if (mem_be[1]) begin dm[ea + 16'd1] = mem_wdata[15:8]; if (!al[ea + 16'd1]) begin n_bad_wr = n_bad_wr + 1; fail("write outside the job", ea + 1, mem_wdata); end end
+                end else begin
+                    if (mem_be[1]) begin dm[ea] = mem_wdata[15:8];      if (!al[ea])          begin n_bad_wr = n_bad_wr + 1; fail("write outside the job", ea, mem_wdata); end end
+                    if (mem_be[0]) begin dm[ea + 16'd1] = mem_wdata[7:0];  if (!al[ea + 16'd1]) begin n_bad_wr = n_bad_wr + 1; fail("write outside the job", ea + 1, mem_wdata); end end
+                end
+            end else begin
+                n_rd = n_rd + 1;
+                rq_d[rq_t] = (LE != 0) ? {dm[ea + 16'd1], dm[ea]} : {dm[ea], dm[ea + 16'd1]};
+                rq_t = rq_t + 1'b1;
+                if (mem_be !== 2'b11) fail("read byte enables", mem_be, 3);
+            end
+        end
+        if (rq_h != rq_t) begin
+            if (rq_wait == 0) begin
+                mem_rvalid <= 1'b1;  mem_rdata <= rq_d[rq_h];  rq_h = rq_h + 1'b1;
+                rq_wait = {$random} % 4;
+            end else rq_wait = rq_wait - 1'b1;
         end
     end
 
-    // ---------------------------------------------------------------- the model
-    integer fails = 0;
-    reg [7:0] ref [0:16383];           // bytes, as they should end up
-    reg [7:0] img [0:16383];           // bytes before the job
-    function [7:0] rdb(input integer a);
-        rdb = (LE != 0) == (a % 2 == 0) ? mem[a / 2][7:0] : mem[a / 2][15:8];
-    endfunction
-    task wrb(input integer a, input [7:0] v);
-        if ((LE != 0) == (a % 2 == 0)) mem[a / 2][7:0] = v; else mem[a / 2][15:8] = v;
-    endtask
-    task wr16(input integer a, input [15:0] v);      // a 16-bit number, as the memory stores it
-        if (LE != 0) begin wrb(a, v[7:0]); wrb(a + 1, v[15:8]); end
-        else begin wrb(a, v[15:8]); wrb(a + 1, v[7:0]); end
-    endtask
-    task snap;
-        integer a;
-        for (a = 0; a < 16384; a = a + 1) begin img[a] = rdb(a); ref[a] = img[a]; end
-    endtask
-    // pixel at bit address ba (bits from the msb of byte 0), bpp bits
-    function [7:0] getp(input integer ba, input integer bpp);
-        reg [7:0] b;
+    // ---------------------------------------------------------------- the model (spec 4.8)
+    integer touched [0:8191];
+    integer n_touched = 0;
+    function integer sx16(input [15:0] v);  sx16 = v[15] ? v - 65536 : v;  endfunction
+    task model_job;                          // the job in jr, on mm
+        integer bits, r, i, k, pd, pb, pa, pos, sh, C, B, A, D, j, msk, by, wq;
         begin
-            b = img[ba / 8];
-            getp = (b >> (8 - (ba % 8) - bpp)) & ((1 << bpp) - 1);
-        end
-    endfunction
-    task setp(input integer ba, input integer bpp, input [7:0] v);
-        reg [7:0] m;
-        begin
-            m = ((1 << bpp) - 1) << (8 - (ba % 8) - bpp);
-            ref[ba / 8] = (ref[ba / 8] & ~m) | ((v << (8 - (ba % 8) - bpp)) & m);
-        end
-    endtask
-    function [7:0] mint(input [7:0] m, input [7:0] a, input [7:0] b, input [7:0] c);
-        integer i;
-        for (i = 0; i < 8; i = i + 1) mint[i] = m[{a[i], b[i], c[i]}];
-    endfunction
-    // The expected result of BLIT or ADD on channel ch (forwards order; the
-    // tests keep sources and destinations apart, or copy as memmove would)
-    task model(input integer ch);
-        integer r, x, bpp, ba, bb, bd, bs, ds, ones;
-        reg [7:0] a, b, c, d, key;
-        reg [8:0] s;
-        begin
-            bpp = 1 << c_lb[ch]; ones = (1 << bpp) - 1;
-            bs = $signed(c_bstr[ch]); ds = $signed(c_dstr[ch]);
-            key = c_val[ch][7:0] & ones;
-            for (r = 0; r < c_h[ch]; r = r + 1)
-                for (x = 0; x < c_w[ch]; x = x + 1) begin
-                    ba = (c_a[ch] + r * bs) * 8 + c_abit[ch] + x;
-                    bb = (c_b[ch] + r * bs) * 8 + (c_bbit[ch] + x) * bpp;
-                    bd = (c_d[ch] + r * ds) * 8 + (c_dbit[ch] + x) * bpp;
-                    if (c_bc[ch]) begin
-                        if (bpp == 8) b = LE ? c_val[ch][8 * ((c_d[ch] + r * ds + c_dbit[ch] + x) % 4) +: 8]
-                                             : c_val[ch][8 * (3 - (c_d[ch] + r * ds + c_dbit[ch] + x) % 4) +: 8];
-                        else b = c_val[ch][7:0] & ones;
-                    end else b = getp(bb, bpp);
-                    c = getp(bd, bpp);
-                    a = (c_mask[ch] == 1) ? (getp(ba, 1) ? 8'hFF : 8'h00)
-                      : (c_mask[ch] == 2) ? ((b != key) ? 8'hFF : 8'h00) : 8'hFF;
-                    if (c_op[ch] == 1) begin
-                        s = c + b;                      // unsigned saturating at bpp
-                        d = (c_sat[ch] && s > ones) ? ones : s & ones;
-                        if (a == 0) d = c;
-                    end else d = mint(c_mt[ch], a, b, c) & ones;
-                    setp(bd, bpp, d);
+            #1;                                  // (the job's wires follow jr)
+            bits = 1 << job_bpp;  msk = (1 << bits) - 1;
+            for (r = 0; r < job_height; r = r + 1) begin
+                pd = 8 * (job_daddr + r * sx16(job_dstride)) + job_dbit * bits;
+                pb = 8 * (job_baddr + r * sx16(job_bstride)) + job_bbit * bits;
+                pa = 8 * (job_aaddr + r * sx16(job_astride)) + job_abit;
+                for (i = 0; i < job_width; i = i + 1) begin
+                    k   = job_rtl ? -i : i;
+                    pos = pd + k * bits;
+                    by  = (pos >> 3) & 65535;  sh = 8 - (pos & 7) - bits;
+                    C   = (mm[by] >> sh) & msk;
+                    if (job_bconst) begin
+                        wq = pos & 15;
+                        B  = (job_value >> (16 - wq - bits)) & msk;
+                    end else begin
+                        pos = pb + k * bits;
+                        B   = (mm[(pos >> 3) & 65535] >> (8 - (pos & 7) - bits)) & msk;
+                    end
+                    if (job_mask == 2'd0) A = 1;
+                    else if (job_mask == 2'd1) begin
+                        pos = pa + k;
+                        A   = (mm[(pos >> 3) & 65535] >> (7 - (pos & 7))) & 1;
+                    end else A = (B != (job_key & msk));
+                    D = 0;
+                    for (j = 0; j < bits; j = j + 1)
+                        if (job_minterm[4 * A + 2 * ((B >> j) & 1) + ((C >> j) & 1)]) D = D | (1 << j);
+                    mm[by] = (mm[by] & ~(msk << sh)) | (D << sh);
+                    if (!al[by]) begin al[by] = 1'b1;  touched[n_touched] = by;  n_touched = n_touched + 1; end
                 end
-        end
-    endtask
-    task check(input [8*24-1:0] name);
-        integer a, n;
-        begin
-            n = 0;
-            for (a = 0; a < 16384; a = a + 1)
-                if (rdb(a) !== ref[a]) begin
-                    if (n < 8) $display("  %0s: byte %h is %h, want %h (was %h)", name, a, rdb(a), ref[a], img[a]);
-                    n = n + 1;
-                end
-            if (n != 0) begin fails = fails + 1; $display("FAIL %0s: %0d bytes wrong", name, n); end
-            else $display("ok   %0s", name);
-        end
-    endtask
-
-    task clear(input integer ch);
-        begin
-            c_op[ch] = 0; c_mt[ch] = 8'hCC; c_sat[ch] = 0; c_sgn[ch] = 0; c_mask[ch] = 0; c_lb[ch] = 3;
-            c_desc[ch] = 0; c_irq[ch] = 0; c_bc[ch] = 0; c_ymaj[ch] = 0; c_xneg[ch] = 0; c_yneg[ch] = 0;
-            c_val[ch] = 0; c_bstr[ch] = 0; c_dstr[ch] = 0; c_w[ch] = 0; c_h[ch] = 1;
-            c_a[ch] = 0; c_b[ch] = 0; c_d[ch] = 0; c_abit[ch] = 0; c_bbit[ch] = 0; c_dbit[ch] = 0;
-            c_next[ch] = 0; c_bport[ch] = 0; c_dport[ch] = 0;
-        end
-    endtask
-    task go(input [3:0] chs);
-        integer t;
-        begin
-            @(negedge clk) start_run = chs;
-            @(negedge clk) start_run = 0;
-            t = 0;
-            while ((busy & chs) != 0 && t < 200000) begin @(negedge clk); t = t + 1; end
-            if (t == 200000) begin $display("FAIL: channels %b still busy", busy & chs); $finish; end
-            @(negedge clk) clr_done = 4'hF; @(negedge clk) clr_done = 0;
-        end
-    endtask
-    task fillmem;
-        integer a;
-        for (a = 0; a < 8192; a = a + 1) mem[a] = $random;
-    endtask
-
-    integer i, n, t, x, y, e, ba, bd;
-    initial begin
-        for (i = 0; i < 4; i = i + 1) clear(i);
-        for (i = 0; i < 1024; i = i + 1) xmem[i] = $random;
-        fillmem;
-        repeat (4) @(negedge clk); rst = 0;
-
-        // ---- a fill at 8 bpp: VALUE's bytes by address
-        clear(0); c_bc[0] = 1; c_val[0] = 32'h11223344; c_d[0] = 24'h101; c_w[0] = 37; c_h[0] = 3; c_dstr[0] = 64;
-        snap; model(0); go(1); check("fill 8 bpp");
-        // ---- copies at every depth, odd bit offsets: shifts and edge masks
-        for (i = 0; i < 4; i = i + 1) begin
-            clear(1); c_lb[1] = i; c_b[1] = 24'h400 + i; c_bbit[1] = 7 >> (3 - i);
-            c_d[1] = 24'h2003 + i; c_dbit[1] = 5 >> (3 - i); if (i == 3) c_dbit[1] = 0;
-            c_w[1] = 61 + 9 * i; c_h[1] = 4; c_bstr[1] = 80; c_dstr[1] = 96;
-            snap; model(1); go(2);
-            case (i) 0: check("copy 1 bpp"); 1: check("copy 2 bpp"); 2: check("copy 4 bpp"); default: check("copy 8 bpp"); endcase
-        end
-        // ---- minterms: XOR, AND NOT, and a constant
-        clear(2); c_lb[2] = 0; c_mt[2] = 8'h66; c_b[2] = 24'h800; c_bbit[2] = 3; c_d[2] = 24'h1800; c_dbit[2] = 6;
-        c_w[2] = 300; c_h[2] = 5; c_bstr[2] = 40; c_dstr[2] = 48;
-        snap; model(2); go(4); check("minterm XOR");
-        c_mt[2] = 8'h0C; c_lb[2] = 2; c_w[2] = 50; snap; model(2); go(4); check("minterm B AND NOT C");
-        c_mt[2] = 8'hFF; c_lb[2] = 1; snap; model(2); go(4); check("minterm all ones");
-        // ---- backwards, overlapping: a row moved 3 bytes on in place
-        clear(3); c_desc[3] = 1; c_b[3] = 24'h3000; c_d[3] = 24'h3003; c_w[3] = 100; c_h[3] = 3;
-        c_bstr[3] = 128; c_dstr[3] = 128;
-        snap; model(3); go(8); check("backwards overlapping");
-        clear(3); c_desc[3] = 1; c_lb[3] = 0; c_b[3] = 24'h3000; c_bbit[3] = 2; c_d[3] = 24'h3400; c_dbit[3] = 7;
-        c_w[3] = 77; c_h[3] = 6; c_bstr[3] = 20; c_dstr[3] = 24;
-        snap; model(3); go(8); check("backwards 1 bpp");
-        // ---- key colour and mask image (cookie cut, 0xCA)
-        clear(0); c_mask[0] = 2; c_mt[0] = 8'hCA; c_val[0] = 32'h5A; c_b[0] = 24'h500; c_d[0] = 24'h2801; c_w[0] = 40; c_h[0] = 3;
-        c_bstr[0] = 64; c_dstr[0] = 64;
-        for (i = 0; i < 120; i = i + 3) wrb(24'h500 + i, 8'h5A);
-        snap; model(0); go(1); check("key colour 8 bpp");
-        c_mask[0] = 1; c_a[0] = 24'h1000; c_abit[0] = 5; c_lb[0] = 2; c_bbit[0] = 1; c_dbit[0] = 3;
-        snap; model(0); go(1); check("mask image 4 bpp");
-        // ---- ADD, saturating
-        clear(1); c_op[1] = 1; c_sat[1] = 1; c_b[1] = 24'h600; c_d[1] = 24'h2A00; c_w[1] = 33; c_h[1] = 2;
-        c_bstr[1] = 64; c_dstr[1] = 64;
-        snap; model(1); go(2); check("ADD saturating 8 bpp");
-        // ---- four channels at once (round robin, set-up again on each return)
-        clear(0); c_lb[0] = 0; c_b[0] = 24'h400; c_d[0] = 24'h2000; c_w[0] = 900; c_h[0] = 3; c_bstr[0] = 120; c_dstr[0] = 120;
-        clear(1); c_bc[1] = 1; c_val[1] = 32'hA1B2C3D4; c_d[1] = 24'h2200; c_w[1] = 300; c_h[1] = 2; c_dstr[1] = 320;
-        clear(2); c_lb[2] = 1; c_mt[2] = 8'h3C; c_b[2] = 24'h900; c_bbit[2] = 1; c_d[2] = 24'h2600; c_w[2] = 333; c_h[2] = 3;
-        c_bstr[2] = 90; c_dstr[2] = 100;
-        clear(3); c_desc[3] = 1; c_b[3] = 24'hC00; c_d[3] = 24'h2A00; c_w[3] = 250; c_h[3] = 2; c_bstr[3] = 256; c_dstr[3] = 256;
-        snap; model(0); model(1); model(2); model(3); go(4'hF); check("four channels");
-
-        // ---- from the other port
-        clear(2); c_b[2] = 24'h20001; c_d[2] = 24'h3101; c_w[2] = 50; c_h[2] = 2; c_bstr[2] = 100; c_dstr[2] = 64;
-        snap;
-        for (y = 0; y < 2; y = y + 1)
-            for (x = 0; x < 50; x = x + 1) begin
-                n = 24'h20001 - 24'h20000 + y * 100 + x;
-                ref[24'h3101 + y * 64 + x] = (LE != 0) == (n % 2 == 0) ? xmem[n / 2][7:0] : xmem[n / 2][15:8];
             end
-        go(4); check("other port to memory");
-
-        if (LINES) begin
-        // ---- LINE at 8 bpp, x major, clipped at x = 8
-        clear(0); c_op[0] = 2; c_val[0] = 32'hFFFFFFE7; c_mt[0] = 8'hCC; c_d[0] = 24'h3200; c_dstr[0] = 64;
-        c_a[0] = 0; c_b[0] = 0; c_w[0] = 11; c_h[0] = 4;
-        clip_xmax = 8;
-        snap;
-        x = 0; y = 0; e = 2 * 4 - 10;
-        for (i = 0; i < 11; i = i + 1) begin
-            if (x <= 8) ref[24'h3200 + y * 64 + x] = 8'hE7;
-            x = x + 1;
-            if (e > 0) begin y = y + 1; e = e + 2 * (4 - 10); end else e = e + 2 * 4;
         end
-        go(1); check("LINE clipped");
-        clip_xmax = 16'h7FFF;
-
-        // ---- EDGES: one edge drawn, one wholly left of the clip rectangle
-        clear(0); c_op[0] = 3; c_val[0] = 32'hFFFFFFFF; c_val[0][7:0] = 8'h3C; c_d[0] = 24'h3200; c_dstr[0] = 64;
-        c_a[0] = 24'h3600; c_b[0] = 24'h3700; c_w[0] = 2;
-        wr16(24'h3600, 2);  wr16(24'h3602, 1);     // point 0: (2, 1)
-        wr16(24'h3604, 9);  wr16(24'h3606, 4);     // point 1: (9, 4)
-        wr16(24'h3608, -10); wr16(24'h360A, 0);    // point 2: (-10, 0)
-        wr16(24'h360C, -3); wr16(24'h360E, 2);     // point 3: (-3, 2)
-        wrb(24'h3700, 0); wrb(24'h3701, 1);        // edge 0: points 0 and 1
-        wrb(24'h3702, 2); wrb(24'h3703, 3);        // edge 1: points 2 and 3
-        clip_xmin = 0;
-        snap;
-        x = 2; y = 1; e = 2 * 3 - 7;
-        for (i = 0; i < 8; i = i + 1) begin
-            ref[24'h3200 + y * 64 + x] = 8'h3C;
-            x = x + 1;
-            if (e > 0) begin y = y + 1; e = e + 2 * (3 - 7); end else e = e + 2 * 3;
+    endtask
+    task clear_allowed;
+        integer q;
+        begin
+            for (q = 0; q < n_touched; q = q + 1) al[touched[q]] = 1'b0;
+            n_touched = 0;
         end
-        go(1); check("EDGES");
-        clip_xmin = 16'h8000;
-        end else begin
-        // ---- without LINE and EDGES, OP 2 and OP 3 are errors
-        for (i = 2; i < 4; i = i + 1) begin
-            clear(0); c_op[0] = i; c_w[0] = 4; c_h[0] = 1; c_d[0] = 24'h3200; c_dstr[0] = 64;
-            @(negedge clk) da_we = 4'h1; da_d = 24'h0100 + i; @(negedge clk) da_we = 0;
-            snap; go(1); check("no write");
-            if (!err[0] || ea_q[23:0] != 24'h0100 + i) begin
-                fails = fails + 1; $display("FAIL OP %0d left out: err %b at %h", i, err[0], ea_q[23:0]);
-            end else $display("ok   OP %0d left out is an error", i);
-            @(negedge clk) clr_err = 4'h1; @(negedge clk) clr_err = 0;
+    endtask
+    task compare(input [8*20-1:0] what);
+        integer a, bad;
+        begin
+            bad = 0;
+            for (a = 0; a < 65536; a = a + 1)
+                if (dm[a] !== mm[a]) begin
+                    if (bad == 0) begin
+                        fail(what, a, {dm[a], mm[a]});
+                        if (errors <= 12)
+                            $display("   job: mt %h mask %0d bpp %0d rtl %b bconst %b val %h key %h w %0d h %0d a %h.%0d/%0d b %h.%0d/%0d d %h.%0d/%0d",
+                                     job_minterm, job_mask, job_bpp, job_rtl, job_bconst, job_value, job_key, job_width, job_height,
+                                     job_aaddr, job_abit, sx16(job_astride), job_baddr, job_bbit, sx16(job_bstride),
+                                     job_daddr, job_dbit, sx16(job_dstride));
+                    end
+                    bad = bad + 1;
+                    dm[a] = mm[a];                       // carry on from the model's memory
+                end
         end
+    endtask
+
+    // ---------------------------------------------------------------- running jobs
+    integer n_done = 0, guard;
+    always @(posedge clk) if (done) n_done = n_done + 1;
+    task set_job(input [7:0] mt, input [1:0] mask, input [1:0] bpp, input rtl, input bconst, input irq,
+                 input [15:0] value, input [7:0] key, input integer w, input integer h,
+                 input [23:0] aa, input [2:0] ab, input integer as,
+                 input [23:0] ba, input [2:0] bb, input integer bs,
+                 input [23:0] daa, input [2:0] db, input integer ds, input [23:0] next);
+        begin
+            jr[0] = {mt, mask, bpp, rtl, bconst, irq, 1'b0, value};
+            jr[1] = {h[15:0], key, 8'h00};
+            jr[2] = {as[15:0], bs[15:0]};
+            jr[3] = {ds[15:0], w[15:0]};
+            jr[4] = {5'd0, ab, aa};  jr[5] = {5'd0, bb, ba};  jr[6] = {5'd0, db, daa};
+            jr[7] = {8'd0, next};
         end
-
-        // ---- port jobs: FIFO to memory, memory to FIFO
-        clear(1); c_bport[1] = 1; c_d[1] = 24'h3301; c_w[1] = 21;
-        for (i = 0; i < 21; i = i + 1) begin rxq[rx_w % 64] = 8'h40 + i; rx_w = rx_w + 1; end
-        snap; for (i = 0; i < 21; i = i + 1) ref[24'h3301 + i] = 8'h40 + i;
-        go(2); check("FIFO to memory");
-        clear(1); c_dport[1] = 1; c_b[1] = 24'h3301; c_w[1] = 21; tx_n = 0;
-        go(2);
-        n = 0; for (i = 0; i < 21; i = i + 1) if (txq[i] !== 8'h40 + i) n = n + 1;
-        if (n != 0 || tx_n != 21) begin fails = fails + 1; $display("FAIL memory to FIFO: %0d sent, %0d wrong", tx_n, n); end
-        else $display("ok   memory to FIFO");
-
-        // ---- a descriptor load, chained from a fill: VALUE and DPT from the descriptor
-        clear(2); c_bc[2] = 1; c_val[2] = 32'h01010101; c_d[2] = 24'h3400; c_w[2] = 8; c_next[2] = 24'h3500; c_irq[2] = 1;
-        for (i = 0; i < 32; i = i + 1) wrb(24'h3500 + i, 8'h00);
-        wrb(24'h3500, 8'h77); wrb(24'h3501, 8'h77); wrb(24'h3502, 8'h77); wrb(24'h3503, 8'h77);   // VALUE
-        wrb(24'h3504, 8'h10); wrb(24'h3505, 8'h34); wrb(24'h3506, 8'h00);                     // DPT 0x3410
-        snap; for (i = 0; i < 8; i = i + 1) begin ref[24'h3400 + i] = 8'h01; ref[24'h3410 + i] = 8'h77; end
-        dl_n = 0; t = 0;
-        fork go(4); begin while (busy[2] || t == 0) begin @(negedge clk); if (irq_set[2]) t = t + 1; end end join
-        check("descriptor chain");
-        if (dl_n != 8 || da_q[71:48] != 24'h3500 || t != 2) begin
-            fails = fails + 1; $display("FAIL descriptor load: %0d long words, address %h, %0d interrupts", dl_n, da_q[71:48], t);
+    endtask
+    task wait_idle;
+        begin
+            guard = 0;
+            @(negedge clk);
+            while (busy && guard < 2000000) begin @(negedge clk);  guard = guard + 1; end
+            if (busy) fail("job never ended", guard, 0);
+            repeat (2) @(negedge clk);
         end
+    endtask
+    task run;                                // the job in jr: model, then the core, then compare
+        begin
+            model_job;
+            @(negedge clk) start_run = 1'b1;
+            @(negedge clk) start_run = 1'b0;
+            wait_idle;
+            if (err) fail("unexpected error flag", 1, 0);
+            compare("memory after the job");
+            clear_allowed;
+            n_jobs = n_jobs + 1;
+        end
+    endtask
+    // A descriptor in both memories, as the wrapper's 8 long words
+    task put_word(input [15:0] a, input [15:0] v);
+        begin
+            if (LE != 0) begin dm[a] = v[7:0];  dm[a + 16'd1] = v[15:8]; end
+            else         begin dm[a] = v[15:8]; dm[a + 16'd1] = v[7:0];  end
+            mm[a] = dm[a];  mm[a + 16'd1] = dm[a + 16'd1];
+        end
+    endtask
+    task put_desc(input [15:0] a);           // from jr
+        integer q;
+        begin
+            for (q = 0; q < 8; q = q + 1) begin
+                put_word(a + 4 * q, jr[q][31:16]);  put_word(a + 4 * q + 2, jr[q][15:0]);
+            end
+        end
+    endtask
 
-        // ---- errors: past the memory, and a bad op
-        clear(3); c_bc[3] = 1; c_d[3] = 24'h8000; c_w[3] = 4;
-        go(8);
-        if (!err[3] || ea_q[95:72] != 24'h8000) begin fails = fails + 1; $display("FAIL bad address: err %b at %h", err[3], ea_q[95:72]); end
-        else $display("ok   bad address");
-        @(negedge clk) clr_err = 4'h8; @(negedge clk) clr_err = 0;
-        clear(3); c_op[3] = 5; c_w[3] = 4;
-        @(negedge clk) da_we = 4'h8; da_d = 24'h1234; @(negedge clk) da_we = 0;
-        go(8);
-        if (!err[3] || ea_q[95:72] != 24'h1234) begin fails = fails + 1; $display("FAIL bad op: err %b at %h", err[3], ea_q[95:72]); end
-        else $display("ok   bad op");
+    // Random jobs: A, B and D in their own parts of the memory
+    integer lb, bits, w, h, t;
+    reg [7:0] mt;
+    reg [1:0] mk;
+    task random_job;
+        begin
+            lb = {$random} % 4;  bits = 1 << lb;
+            w  = ({$random} % 4 == 0) ? 1 + {$random} % 3 : 1 + {$random} % 70;
+            h  = 1 + {$random} % 5;
+            case ({$random} % 12)
+                0: mt = 8'hCC;  1: mt = 8'hCA;  2: mt = 8'h66;  3: mt = 8'hEE;  4: mt = 8'h88;
+                5: mt = 8'h0A;  6: mt = 8'hFF;  7: mt = 8'h00;  default: mt = $random;
+            endcase
+            mk = {$random} % 3;
+            if (MASKIMG == 0 && mk == 2'd1) mk = 2'd0;
+            set_job(mt, mk, lb[1:0], {$random} % 2, {$random} % 3 == 0, 1'b0, $random, $random, w, h,
+                    24'h003400 + {$random} % 64, {$random} % 8, ({$random} % 97) - 48,
+                    24'h002800 + {$random} % 64, {$random} % (8 / bits), ({$random} % 97) - 48,
+                    24'h001000 + {$random} % 64, {$random} % (8 / bits), ({$random} % 97) - 48, 24'd0);
+            run;
+        end
+    endtask
 
-        if (fails == 0) $display("TEST PASSED (LE=%0d LINES=%0d)", LE, LINES);
-        else $display("TEST FAILED: %0d (LE=%0d LINES=%0d)", fails, LE, LINES);
+    integer a, wr0, rd0, d0, q;
+    initial begin
+        for (a = 0; a < 65536; a = a + 1) begin dm[a] = $random;  mm[a] = dm[a];  al[a] = 1'b0; end
+        for (a = 0; a < 8; a = a + 1) jr[a] = 32'd0;
+        repeat (4) @(negedge clk);
+        rst = 1'b0;
+
+        // ---- random jobs, fast memory then slow
+        for (t = 0; t < 3000; t = t + 1) random_job;
+        slow = 1;
+        for (t = 0; t < 400; t = t + 1) random_job;
+        slow = 0;
+        $display("%0d random jobs", n_jobs);
+
+        // ---- access counts (spec 4.3): an 8-bit 32 x 2 rectangle on word boundaries
+        wr0 = n_wr;  rd0 = n_rd;
+        set_job(8'hCC, 0, 3, 0, 1, 0, 16'h0707, 0, 32, 2, 0, 0, 0, 0, 0, 0, 24'h001000, 0, 64, 0);  run;
+        if (n_wr - wr0 != 32 || n_rd - rd0 != 0) fail("fill: writes, reads", n_wr - wr0, n_rd - rd0);
+        wr0 = n_wr;  rd0 = n_rd;
+        set_job(8'hCC, 0, 3, 0, 0, 0, 0, 0, 32, 2, 0, 0, 0, 24'h002800, 0, 32, 24'h001000, 0, 64, 0);  run;
+        if (n_wr - wr0 != 32 || n_rd - rd0 != 32) fail("copy: writes, reads", n_wr - wr0, n_rd - rd0);
+        wr0 = n_wr;  rd0 = n_rd;
+        set_job(8'hCA, 2, 3, 0, 0, 0, 0, 0, 32, 2, 0, 0, 0, 24'h002800, 0, 32, 24'h001000, 0, 64, 0);  run;
+        if (n_wr - wr0 != 32 || n_rd - rd0 != 64) fail("key cut: writes, reads", n_wr - wr0, n_rd - rd0);
+
+        // ---- overlapping copies, each in its safe direction (4 bits a pixel, 40 bytes a row)
+        // left 3 pixels; up 2 rows; right 5 pixels (right to left); right 37 pixels; down 2 rows (bottom up)
+        set_job(8'hCC, 0, 2, 0, 0, 0, 0, 0, 60, 6, 0, 0, 0, 24'h001001, 1, 40, 24'h001000, 0, 40, 0);  run;
+        set_job(8'hCC, 0, 2, 0, 0, 0, 0, 0, 60, 6, 0, 0, 0, 24'h001050, 0, 40, 24'h001000, 0, 40, 0);  run;
+        set_job(8'hCC, 0, 2, 1, 0, 0, 0, 0, 60, 6, 0, 0, 0, 24'h00101D, 1, 40, 24'h001020, 0, 40, 0);  run;
+        set_job(8'hCC, 0, 2, 1, 0, 0, 0, 0, 60, 6, 0, 0, 0, 24'h00101D, 1, 40, 24'h001030, 0, 40, 0);  run;
+        set_job(8'hCC, 0, 2, 0, 0, 0, 0, 0, 60, 6, 0, 0, 0, 24'h0010C8, 0, -40, 24'h001118, 0, -40, 0);  run;
+        // the same at 1 bit and 8 bits, right by less than a word and by more
+        set_job(8'hCC, 0, 0, 1, 0, 0, 0, 0, 200, 3, 0, 0, 0, 24'h001018, 7, 40, 24'h001019, 4, 40, 0);  run;
+        set_job(8'hCC, 0, 3, 1, 0, 0, 0, 0, 30, 3, 0, 0, 0, 24'h00101D, 0, 40, 24'h001020, 0, 40, 0);  run;
+
+        // ---- a chain of three jobs from descriptors, the middle one empty, the first with job_irq
+        d0 = n_done;
+        set_job(8'h66, 0, 3, 0, 1, 0, 16'hFFFF, 0, 20, 2, 0, 0, 0, 0, 0, 0, 24'h001200, 0, 64, 0);          put_desc(16'h3C40);
+        model_job;                                                                                             // (the third job)
+        set_job(8'hCC, 0, 3, 0, 1, 0, 16'h1111, 0, 0, 5, 0, 0, 0, 0, 0, 0, 24'h001000, 0, 64, 24'h003C40);   put_desc(16'h3C20);
+        set_job(8'hCC, 0, 1, 0, 1, 1, 16'h5555, 0, 33, 3, 0, 0, 0, 0, 0, 0, 24'h001100, 1, 16, 24'h003C20);  put_desc(16'h3C00);
+        model_job;                                                                                             // (the first)
+        for (a = 0; a < 8; a = a + 1) jr[a] = 32'hFFFF_FFFF;                                                  // the wrapper's job is junk until loaded
+        @(negedge clk) begin da_d = 24'h003C00;  da_we = 1'b1; end
+        @(negedge clk) begin da_we = 1'b0;  start_ld = 1'b1; end
+        @(negedge clk) start_ld = 1'b0;
+        wait_idle;
+        compare("memory after the chain");  clear_allowed;
+        if (n_done - d0 != 2) fail("chain: done strobes", n_done - d0, 2);
+        if (da_q !== 24'h003C40) fail("chain: da_q", da_q, 24'h3C40);
+        if (err) fail("chain: err", 1, 0);
+
+        // ---- enable held low mid-job: no new request while it is low
+        set_job(8'hCA, 2, 3, 0, 0, 0, 0, 8'h11, 64, 8, 0, 0, 0, 24'h002800, 0, 64, 24'h001000, 0, 64, 0);
+        model_job;
+        @(negedge clk) start_run = 1'b1;
+        @(negedge clk) start_run = 1'b0;
+        repeat (200) @(negedge clk);
+        enable = 1'b0;
+        repeat (4) @(negedge clk);
+        wr0 = n_wr + n_rd;
+        while (mem_req) @(negedge clk);
+        for (q = 0; q < 100; q = q + 1) begin @(negedge clk); if (mem_req) fail("request while enable is low", q, 0); end
+        if (!busy) fail("enable low ended the job", 0, 0);
+        enable = 1'b1;
+        wait_idle;
+        compare("memory after enable low");  clear_allowed;
+
+        // ---- stop mid-job: it ends early, with done and no error, writing only inside the job
+        set_job(8'hCC, 0, 3, 0, 1, 0, 16'hA5A5, 0, 64, 40, 0, 0, 0, 0, 0, 0, 24'h001000, 0, 64, 0);
+        model_job;
+        d0 = n_done;
+        @(negedge clk) start_run = 1'b1;
+        @(negedge clk) start_run = 1'b0;
+        repeat (300) @(negedge clk);
+        stop = 1'b1;  @(negedge clk) stop = 1'b0;
+        wait_idle;
+        if (n_done - d0 != 1) fail("stop: done strobes", n_done - d0, 1);
+        if (err) fail("stop: err", 1, 0);
+        q = 0;
+        for (a = 16'h1000; a < 16'h1000 + 64 * 40; a = a + 1) if (dm[a] !== mm[a]) q = q + 1;
+        if (q == 0 || q >= 64 * 40 - 64) fail("stop: bytes left unwritten", q, 0);
+        for (a = 0; a < 65536; a = a + 1) mm[a] = dm[a];                                                      // carry on from what was written
+        clear_allowed;
+
+        // ---- errors: a bad job, mask 3, and the mask image where it is not built; nothing is written
+        wr0 = n_wr;
+        set_job(8'hCC, 3, 3, 0, 1, 0, 16'h0000, 0, 16, 2, 0, 0, 0, 0, 0, 0, 24'h001000, 0, 64, 0);
+        @(negedge clk) start_run = 1'b1;  @(negedge clk) start_run = 1'b0;  wait_idle;
+        if (!err) fail("mask 3 is not an error", 0, 0);
+        set_job(8'hCC, 0, 3, 0, 1, 0, 16'h0000, 0, 16, 2, 0, 0, 0, 0, 0, 0, 24'h001000, 0, 64, 0);
+        jr[0][16] = 1'b1;
+        @(negedge clk) start_run = 1'b1;  @(negedge clk) start_run = 1'b0;  wait_idle;
+        if (!err) fail("job_bad is not an error", 0, 0);
+        set_job(8'hCA, 1, 3, 0, 1, 0, 16'h0000, 0, 16, 2, 24'h003400, 0, 2, 0, 0, 0, 24'h001000, 0, 64, 0);
+        if (MASKIMG == 0) begin
+            @(negedge clk) start_run = 1'b1;  @(negedge clk) start_run = 1'b0;  wait_idle;
+            if (!err) fail("mask 1 without MASKIMG is not an error", 0, 0);
+        end
+        if (n_wr != wr0) fail("an error job wrote", n_wr - wr0, 0);
+        // ... and the next start clears the flag
+        set_job(8'hCC, 0, 3, 0, 1, 0, 16'h3C3C, 0, 16, 2, 0, 0, 0, 0, 0, 0, 24'h001000, 0, 64, 0);  run;
+
+        $display("LE=%0d MASKIMG=%0d: %0d jobs, %0d writes, %0d reads", LE, MASKIMG, n_jobs, n_wr, n_rd);
+        if (errors == 0) $display("TEST PASSED");
+        else             $display("TEST FAILED: %0d errors", errors);
         $finish;
     end
 endmodule

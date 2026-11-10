@@ -33,7 +33,9 @@ check layer_fetch "-set PLANAR 1 -set DATWRITE 1 -set PW 23"
 check layer_fetch "-set PLANAR 0 -set TILES 1 -set LITTLE 1"
 check layer_fetch "-set NL 1 -set PLANAR 0 -set TILES 1 -set LITTLE 1"
 check layer_pix   "-set PLANAR 0 -set TILES 1"
-check blitter     "-set LE 1 -set XPORT 1 -set PORTJOB 1 -set LINE 1 -set EDGES 1"
+check blitter_v1  "-set LE 1 -set XPORT 1 -set PORTJOB 1 -set LINE 1 -set EDGES 1"
+check blitter     "-set LE 1 -set MASKIMG 0"
+check blitter     "-set LE 0 -set MASKIMG 1"
 
 if [ $fail -ne 0 ]; then exit 1; fi
 echo "drivers: every register has one driver"

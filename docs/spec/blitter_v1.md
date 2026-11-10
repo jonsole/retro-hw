@@ -1,6 +1,6 @@
 # Blitter, first design (blitter, as `rtl/blitter.v` is today)
 
-Status: **being replaced**. This describes `rtl/blitter.v` as it stands (four channels, ADD, LINE, EDGES, port jobs). The redesign splits it into three cores: [blitter.md](blitter.md), [raster.md](raster.md) and [geom.md](geom.md). This file goes when the new blitter's RTL lands.
+Status: **being replaced**. This describes `rtl/blitter_v1.v` (the first design, kept until `raster` lands) (four channels, ADD, LINE, EDGES, port jobs). The redesign splits it into three cores: [blitter.md](blitter.md), [raster.md](raster.md) and [geom.md](geom.md). This file goes when the new blitter's RTL lands.
 
 `rtl/blitter.v` is the blitter: four DMA channels, their scheduler, and one Amiga-style blitter datapath they share. (It was `dmx_core` until November 2026.) It reads and writes memory a word at a time. A machine's wrapper keeps the registers: the job registers and their layout, the descriptor format, the control and status registers and the interrupt flags. The wrapper turns register writes into the core's channel strobes and decodes the running channel's job onto the core's job ports.
 

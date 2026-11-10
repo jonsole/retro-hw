@@ -1,6 +1,6 @@
 # Blitter (blitter)
 
-Status: **draft**, revision 2 for review: a redesign. The first design (four channels on one datapath, ADD, LINE, EDGES, port jobs, a second port; [blitter_v1.md](blitter_v1.md), which is what `rtl/blitter.v` implements today) tried to do too much. It becomes three cores: this one for rectangles of pixels, [raster](raster.md) for lines and triangles, and [geom](geom.md) for 3D points. No RTL yet.
+Status: **draft**, revision 2 for review: a redesign. The first design (four channels on one datapath, ADD, LINE, EDGES, port jobs, a second port; [blitter_v1.md](blitter_v1.md), which is what `rtl/blitter.v` implements today) tried to do too much. It becomes three cores: this one for rectangles of pixels, [raster](raster.md) for lines and triangles, and [geom](geom.md) for 3D points. `rtl/blitter.v` implements this revision.
 
 The blitter works on rectangles of pixels in memory: it copies, fills, combines and cuts out, one job at a time. Each destination pixel D is a logic function (the minterm) of three inputs: A, a 1-bit mask; B, the source; and C, the destination's old contents. It is the Amiga's blitter in outline. A job can name a next job, so a list of jobs runs with no CPU in between.
 
@@ -105,7 +105,7 @@ One requester on the scheduler. `raster` and `geom` have the same port.
 
 | Name | Default | Meaning |
 |------|---------|---------|
-| `AW` | 21 | Word address width. A job's byte addresses are cut to AW + 1 bits: there is no range check, and an address past the memory wraps. The machine's memory map keeps jobs in bounds |
+| `AW` | 21 | Word address width, 15 to 23. A job's byte addresses are cut to AW + 1 bits: there is no range check, and an address past the memory wraps. The machine's memory map keeps jobs in bounds |
 | `LE` | 0 | 1: memory is little-endian (the even byte in bits 7–0) |
 | `MASKIMG` | 1 | 0: no 1-bit mask image; `job_mask` 1 is an error. For example 0 on a small FPGA |
 
@@ -138,7 +138,7 @@ Each destination word of a row takes these memory accesses, in this order:
 | Read C | The minterm depends on C, or the word is the row's first or last and a byte of it is only partly inside the row |
 | Write D | Always, with byte enables off for bytes wholly outside the row |
 
-So a fill with a constant is one access a word; a plain copy two; a cookie-cut with a key colour three. The core puts up one request at a time and the next no later than the clock after `mem_ack`; it does not wait for a read to come back before asking for the next. How fast a job runs is then the memory cycles the scheduler gives it.
+So a fill with a constant is one access a word; a plain copy two; a cookie-cut with a key colour three. The core puts up one request at a time. A word's B and C reads are asked for one after the other without waiting for data; its write follows when both are back, and an A read is waited for on its own. The core may read one source or mask word past the row's last pixel. How fast a job runs is mostly the memory cycles the scheduler gives it.
 
 The datapath for a word:
 
@@ -242,7 +242,7 @@ At 4 bits a pixel, an object at an odd x has `dbit` 1: a 16-pixel-wide row then 
  done                               1        (the job has job_irq, or the chain ends)
 ```
 
-**A chain.** When a job ends with `job_next` not 0, `da_q` becomes `job_next` and the load, set-up and job follow at once, with `busy` high throughout. `done` strobes at each job's end that has `job_irq`, and once more when the chain ends.
+**A chain.** When a job ends with `job_next` not 0, `da_q` becomes `job_next` and the load, set-up and job follow at once, with `busy` high throughout. `done` strobes at each job's end that has `job_irq`, and when the chain ends (one strobe if the last job has `job_irq`).
 
 **Strobes while busy.** `start_ld`, `start_run` and `da_we` are ignored. `stop` during a descriptor load or set-up ends the chain before the job starts.
 
@@ -267,7 +267,7 @@ At 4 bits a pixel, an object at an odd x has `dbit` 1: a 16-pixel-wide row then 
 | # | Point |
 |---|-------|
 | B1 | Choices made in this draft that were not in the grilling, for review: rows backwards by negative strides instead of a core mode; no address range check; every destination word is written (the first design skipped words left unchanged); `job_value` is one 16-bit word; `stop` is not resumable |
-| B2 | Size and speed are not targets (Jon: simple first, measure after). The first design is about 3,200 LUTs in retro-z80's KS2 build with LINE and EDGES |
+| B2 | Size and speed are not targets (Jon: simple first, measure after). In Yosys for 7-series the core is 894 LUTs and 309 flip-flops without the mask image (the KS2's build) and 1,354 and 396 with it; the first design without LINE and EDGES is about 2,500 and 2,700 in the same measure |
 | B3 | A FIFO mover for retro68k's SD card and serial jobs is decided later; the second port (palette and register loads) is dropped |
 | B5 | Both machines reviewed revision 2 at 6793fd9 and agree. Their one change is in: A has its own stride (`job_astride`), since a 1-bit mask beside an 8-bit source would otherwise need its rows padded eightfold |
 | B4 | `rtl/blitter.v` is still the first design. The new blitter and `raster` are built on one branch and land together, and the first design is deleted with them, so main never lacks lines (Jon, at retro-z80's request). `geom` follows |
