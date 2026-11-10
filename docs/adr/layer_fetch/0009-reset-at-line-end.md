@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # The pointers are reset at the line end; nothing counts words
