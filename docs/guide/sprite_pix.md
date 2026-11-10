@@ -28,11 +28,12 @@ genvar g;
 generate for (g = 0; g < 8; g = g + 1) begin : sprs
     wire [5:0] rp;
     assign sp_ra[5*g +: 5] = rp[4:0];
+    assign sp_rp[6*g +: 6] = rp;          // to sprite_fetch as it is
     sprite_pix u (
         .clk_pix(clk_pix), .en(video_on), .t(t),
         .act(c_act[g]), .hs(c_hs[g]), .xe(c_xe[g]), .lb(c_lb[g]),
         .xstep(c_xs[g]), .pal(c_pal[g]), .dma(c_dma[g]),
-        .head(sp_rd[16*g +: 16]), .rp(rp), .rp_g(sp_rpg[6*g +: 6]),
+        .head(sp_rd[16*g +: 16]), .rp(rp),
         .wp_g(sp_wpg[6*g +: 6]),
         .flush_t(sp_fl[g]), .flush_ack_t(sp_fla[g]),
         .opaque(s_op[g]), .idx(s_idx[g]), .underrun_t(s_under[g])

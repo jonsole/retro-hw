@@ -14,7 +14,7 @@ Status: **draft**
 | Scaling | XSTEP, 5.11 source pixels per screen pixel: screen pixel i shows source pixel floor(i × XSTEP / 2048) |
 | Colour index | 8 bits: the 8-bit value, or PAL in bits 7–4 and the 2- or 4-bit value below |
 | Transparent | Value 0, and every place before `t` = 144 |
-| FIFO | Read side: an asynchronous read at `rp`, 6-bit pointers (5 address, 1 lap), Gray-coded across |
+| FIFO | Read side: an asynchronous read at `rp`, 6-bit pointers (5 address, 1 lap); the write pointer arrives Gray-coded, the read pointer leaves as it is |
 | Underrun | A DMA sprite whose FIFO is empty when a word is needed shows nothing more until it is flushed |
 | Pipeline | One stage: `opaque` and `idx` are registered |
 
@@ -33,8 +33,7 @@ Status: **draft**
 | `pal` | in | 4 | Palette bits for 2- and 4-bit pixels | As `act` |
 | `dma` | in | 1 | Fed by the DMA: an empty FIFO is an underrun | As `act` |
 | `head` | in | 16 | The FIFO word at `rp` | Combinational from `rp` |
-| `rp` | out | 6 | Read pointer | Registered |
-| `rp_g` | out | 6 | ... Gray-coded, for the system clock side | |
+| `rp` | out | 6 | Read pointer; also wired to `sprite_fetch`'s `rp` as it is | Registered |
 | `wp_g` | in | 6 | Write pointer, Gray-coded, from the system clock side | Synchronised here (2 flops) |
 | `flush_t` | in | 1 | Toggles: the FIFO was emptied | Synchronised here (2 flops) |
 | `flush_ack_t` | out | 1 | Toggles back once this end is emptied | |
@@ -61,7 +60,7 @@ None.
 
 - Build one per sprite, all on the pixel clock, with `t` counting the sprite's line as above.
 - Take each sprite's settings from `sprite_fetch` (`p_act`, `p_hs`, `p_xe`, `p_lb`, `p_xstep`, `p_pal`, `p_dma`) into pixel clock registers at `t` = 12, and hold them for the line. HSTART must therefore be 16 or more.
-- Wire `rp`'s low 5 bits to the sprite's `fifo_ra`, `head` to its `fifo_rd`, and the Gray pointers and flush toggles to `sprite_fetch`.
+- Wire `rp`'s low 5 bits to the sprite's `fifo_ra`, `head` to its `fifo_rd`, and `rp`, `wp_g` and the flush toggles to `sprite_fetch`.
 - Put the pixels through the machine's own priority and palette; gather collisions between `opaque` outputs over a line and hand them to `sprite_fetch` with a toggle.
 
 ## 6. Test plan

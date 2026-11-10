@@ -126,7 +126,7 @@ module sprite_fetch #(
     input  wire [39:0]   fifo_ra,        // 8 x 5: read addresses (pixel side)
     output wire [127:0]  fifo_rd,        // 8 x 16: the words there
     output wire [47:0]   wp_g,           // 8 x 6: write pointers, Gray-coded
-    input  wire [47:0]   rp_g,           // 8 x 6: read pointers, Gray-coded (pixel side)
+    input  wire [47:0]   rp,             // 8 x 6: read pointers, as sprite_pix registers them (pixel clock)
     output reg  [7:0]    flush_t,
     input  wire [7:0]    flush_ack_t,
 
@@ -261,16 +261,16 @@ module sprite_fetch #(
 
     // ================================================================ FIFOs
     reg  [5:0]  wp [0:7];
+    // The read pointers cross from the pixel clock. They can move several
+    // words in one step, so a Gray code would not make a half-changed sample
+    // harmless: instead a value is used only when two successive samples
+    // agree. The pixel clock must be at most a third of this one, so that
+    // every value is seen whole twice; a value seen less often is only late.
     (* ASYNC_REG = "TRUE" *) reg [5:0] rp_s1 [0:7];
-    reg  [5:0]  rp_s2 [0:7];
+    (* ASYNC_REG = "TRUE" *) reg [5:0] rp_s2 [0:7];
+    reg  [5:0]  rp_s3 [0:7];
+    reg  [5:0]  wpg [0:7];                     // the write pointers, Gray-coded, registered before they cross
     reg  [3:0]  infl [0:7];                    // reads on their way
-    function [5:0] g2b(input [5:0] gv);
-        integer k;
-        begin
-            g2b[5] = gv[5];
-            for (k = 4; k >= 0; k = k - 1) g2b[k] = g2b[k + 1] ^ gv[k];
-        end
-    endfunction
     reg  [5:0]  rpb [0:7];                     // the read pointers, binary (registered: a clock old, for timing)
     wire [5:0]  cnt [0:7];                     // words in the FIFO
     wire [6:0]  fill [0:7];                    // ... and on their way
@@ -405,8 +405,9 @@ module sprite_fetch #(
         assign dma_wr[g] = !rst && mem_rvalid && q_s[q_h] == g && q_e[q_h] == epoch[g] && !flushing[g] && !restart[g];
         assign man_wr[g] = (MANUAL != 0) && g < NS && !rst && dat_wr && sel == g
                            && !active[g] && !flushing[g] && cnt[g] < 6'd32;
-        assign wp_g[6*g +: 6] = wp[g] ^ (wp[g] >> 1);
-        always @(posedge clk) rpb[g] <= g2b(rp_s2[g]);
+        always @(posedge clk) wpg[g] <= wp[g] ^ (wp[g] >> 1);
+        assign wp_g[6*g +: 6] = wpg[g];
+        always @(posedge clk) if (rp_s2[g] == rp_s3[g]) rpb[g] <= rp_s2[g];
         assign cnt[g]  = wp[g] - rpb[g];
         assign fill[g] = {1'b0, cnt[g]} + {3'd0, infl[g]};
     end endgenerate
@@ -489,8 +490,9 @@ module sprite_fetch #(
         fa_s1 <= flush_ack_t;
         fa_s2 <= fa_s1;
         for (i = 0; i < 8; i = i + 1) begin
-            rp_s1[i] <= rp_g[6*i +: 6];
+            rp_s1[i] <= rp[6*i +: 6];
             rp_s2[i] <= rp_s1[i];
+            rp_s3[i] <= rp_s2[i];
         end
         dl[d3_rr] <= d3_dl;
         pk     <= pick;

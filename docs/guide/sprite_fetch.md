@@ -37,7 +37,7 @@ sprite_fetch #(.NS(8), .PW(23), .AW(21), .LITTLE(0), .URGENT(5), .MANUAL(0)) spr
     .mem_rdata(mem_rdata),
     .p_hs(sp_hs), .p_xe(sp_xe), .p_act(sp_act), .p_lb(sp_lb),
     .p_xstep(sp_xstep), .p_depth(sp_depth), .p_pal(sp_pal), .p_dma(sp_dma),
-    .fifo_ra(sp_ra), .fifo_rd(sp_rd), .wp_g(sp_wpg), .rp_g(sp_rpg),
+    .fifo_ra(sp_ra), .fifo_rd(sp_rd), .wp_g(sp_wpg), .rp(sp_rp),
     .flush_t(sp_fl), .flush_ack_t(sp_fla),
     .coll_line(coll_line), .coll_t(coll_t), .coll_clr(coll_clear), .coll(coll)
 );
@@ -85,6 +85,6 @@ fetching        no ....................yes, from the next line in the window
 - **HSTART at least 16.** The pixel side takes the settings at beam pixel 12, after the line-start pass.
 - **The line start moves.** Reading it back gives the start of the line being drawn, not the value you wrote. A write makes the next shown line start exactly there.
 - **Starting empties the FIFO.** So does the vertical blank, for every sprite. Start the sprites again each frame (a copper list or the vertical blank interrupt).
-- **Sprites not built.** For a sprite at or above `NS`, tie its `flush_ack_t` to its `flush_t` and its `rp_g` to 0.
+- **Sprites not built.** For a sprite at or above `NS`, tie its `flush_ack_t` to its `flush_t` and its `rp` to 0.
 - **Beam in the right domain.** `beam_h` and `beam_v` must be the system clock's view of the beam. Cross them carefully (for example, sample until two samples agree).
 - **Collision clear.** `coll_clr` is a mask for one clock, not a level.

@@ -99,7 +99,7 @@ module tb_sprite_fetch;
         .mem_req(mem_req), .mem_addr(mem_addr), .mem_urgent(),
         .mem_ack(mem_ack), .mem_rvalid(mem_rvalid), .mem_rdata(mem_rdata),
         .p_hs(p_hs), .p_xe(), .p_act(p_act), .p_lb(), .p_xstep(), .p_depth(), .p_pal(), .p_dma(),
-        .fifo_ra(fifo_ra), .fifo_rd(fifo_rd), .wp_g(), .rp_g(48'd0),
+        .fifo_ra(fifo_ra), .fifo_rd(fifo_rd), .wp_g(), .rp(48'd0),
         .flush_t(flush_t), .flush_ack_t(flush_ack_t),
         .coll_line(coll_line), .coll_t(coll_t), .coll_clr(coll_clr), .coll(coll)
     );
@@ -119,7 +119,7 @@ module tb_sprite_fetch;
         .mem_req(mem_req1), .mem_addr(mem_addr1), .mem_urgent(),
         .mem_ack(mem_ack), .mem_rvalid(mem_rvalid), .mem_rdata(mem_rdata),
         .p_hs(), .p_xe(), .p_act(), .p_lb(), .p_xstep(), .p_depth(), .p_pal(), .p_dma(),
-        .fifo_ra(fifo_ra), .fifo_rd(fifo_rd1), .wp_g(), .rp_g(48'd0),
+        .fifo_ra(fifo_ra), .fifo_rd(fifo_rd1), .wp_g(), .rp(48'd0),
         .flush_t(flush_t1), .flush_ack_t(flush_ack_t),
         .coll_line(coll_line), .coll_t(coll_t), .coll_clr(coll_clr), .coll(coll1)
     );

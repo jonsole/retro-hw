@@ -34,8 +34,7 @@ module sprite_pix (
 
     // The FIFO: its front word, and the pointers (6 bits: 5 address, 1 lap)
     input  wire [15:0]        head,            // the word at rp (asynchronous read)
-    output reg  [5:0]         rp,
-    output wire [5:0]         rp_g,            // ... Gray-coded, for the 100 MHz side
+    output reg  [5:0]         rp,              // (a register: it crosses to the 100 MHz side as it is)
     input  wire [5:0]         wp_g,            // the write pointer, Gray-coded, from the 100 MHz side
     input  wire               flush_t,         // toggles: the FIFO was emptied (pointers to 0)
     output reg                flush_ack_t,
@@ -52,7 +51,6 @@ module sprite_pix (
             for (i = 4; i >= 0; i = i - 1) g2b[i] = g2b[i + 1] ^ g[i];
         end
     endfunction
-    assign rp_g = rp ^ (rp >> 1);
 
     reg [5:0] wg1, wg2;
     reg [1:0] fl_s;
