@@ -26,7 +26,7 @@ Each machine documents its own instantiation: the registers that drive a core, t
 | Copper engine | `rtl/copper_engine.v` | [spec/copper_engine.md](spec/copper_engine.md) | [guide/copper_engine.md](guide/copper_engine.md) |
 | Blitter | `rtl/blitter.v` | [spec/blitter.md](spec/blitter.md) | [guide/blitter.md](guide/blitter.md) |
 | Rasteriser: lines and triangles | `rtl/raster.v` | [spec/raster.md](spec/raster.md) | [guide/raster.md](guide/raster.md) |
-| Geometry engine (spec only) | – | [spec/geom.md](spec/geom.md) | – |
+| Geometry engine: 3D points to screen points | `rtl/geom.v` | [spec/geom.md](spec/geom.md) | [guide/geom.md](guide/geom.md) |
 | Platform parts: HDMI output, DDR output register | `platform/artix7/hdmi_out.v`, `oddr.v`, `lint_stub.v`; `platform/sim/oddr.v` | [spec/platform.md](spec/platform.md) | [guide/platform.md](guide/platform.md) |
 
 ## Decisions

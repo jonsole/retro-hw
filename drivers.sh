@@ -37,6 +37,7 @@ check blitter     "-set LE 1 -set MASKIMG 0"
 check blitter     "-set LE 0 -set MASKIMG 1"
 check raster      "-set LE 1 -set TRI 1"
 check raster      "-set LE 0 -set TRI 0"
+check geom        "-set AW 20"
 
 if [ $fail -ne 0 ]; then exit 1; fi
 echo "drivers: every register has one driver"
