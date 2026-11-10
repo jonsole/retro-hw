@@ -1,6 +1,6 @@
 # Rasteriser (raster)
 
-Status: **draft**, revision 1 for review. A new core, from the blitter redesign: it replaces the first blitter's LINE and EDGES jobs. `rtl/raster.v` implements it.
+Status: **draft**, revision 1, reviewed by both machines and built in Vivado by both (PR #14). A new core, from the blitter redesign: it replaces the first blitter's LINE and EDGES jobs. `rtl/raster.v` implements it.
 
 The rasteriser draws lines and flat-filled triangles into a bitmap in memory, from screen coordinates. A triangle is filled directly, a row at a time, so there is no separate edge pass and fill job. Each pixel is written through the blitter's minterm rule with a constant colour, and clipped to a window. The CPU, or the geometry engine ([geom](geom.md)), supplies the screen coordinates.
 
@@ -199,5 +199,5 @@ The descriptor load and set-up are the blitter's (4.10). Then:
 | R3 | The first design's EDGES job (one pixel a row, for a later fill) is gone: TRI fills directly. retro-z80's fast3d demo moves from edges plus a fill to TRI jobs |
 | R5 | Both machines reviewed revision 1 at 6793fd9 and agree; the clip window is now stated as the wrapper's shared registers, and the guide note on long lines is in section 5. retro-z80 may build `TRI` 0 on the KS2 at first, for room |
 | R7 | Both machines' Vivado builds of the first RTL (bff2ac6) passed for lines only but failed 100 MHz with triangles: the row step did the edge compare, ceiling, clamps, count and decision in one clock (26 to 28 logic levels). It is now three clocks, with the span's ends registered |
-| R6 | Size, Yosys for 7-series: 892 LUTs and 383 flip-flops with lines only, 1,825 and 781 with triangles. Not yet trimmed (Jon: simple first); the triangle half has 34-bit edge arithmetic that could narrow |
+| R6 | Size, Yosys for 7-series: 892 LUTs and 383 flip-flops with lines only, 1,825 and 781 with triangles. In Vivado, alone at 100 MHz: lines only 766 LUTs (+0.3 ns of slack) on the KS2's part and 771 (+1.8 ns) on retro68k's; with triangles 1,410 (+0.6 ns) and 1,432 (+1.8 ns). Not yet trimmed (Jon: simple first); the triangle half has 34-bit edge arithmetic that could narrow |
 | R4 | Filled shapes other than triangles (trapezoids, convex polygons in one job), shading and depth are not in this revision |

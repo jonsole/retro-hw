@@ -1,6 +1,6 @@
 # Blitter (blitter)
 
-Status: **draft**, revision 2 for review: a redesign. The first design (four channels on one datapath, ADD, LINE, EDGES, port jobs, a second port; [blitter_v1.md](blitter_v1.md), which is what `rtl/blitter.v` implements today) tried to do too much. It becomes three cores: this one for rectangles of pixels, [raster](raster.md) for lines and triangles, and [geom](geom.md) for 3D points. `rtl/blitter.v` implements this revision.
+Status: **draft**, revision 2: a redesign, reviewed by both machines and built in Vivado by both (PR #14). The first design (four channels on one datapath, ADD, LINE, EDGES, port jobs, a second port; `dmx_core`, then `blitter` revision 1, in the repository's history before PR #14) tried to do too much. It became three cores: this one for rectangles of pixels, [raster](raster.md) for lines and triangles, and [geom](geom.md) for 3D points. `rtl/blitter.v` implements this revision. To be locked once both machines have ported to it.
 
 The blitter works on rectangles of pixels in memory: it copies, fills, combines and cuts out, one job at a time. Each destination pixel D is a logic function (the minterm) of three inputs: A, a 1-bit mask; B, the source; and C, the destination's old contents. It is the Amiga's blitter in outline. A job can name a next job, so a list of jobs runs with no CPU in between.
 
@@ -267,7 +267,7 @@ At 4 bits a pixel, an object at an odd x has `dbit` 1: a 16-pixel-wide row then 
 | # | Point |
 |---|-------|
 | B1 | Choices made in this draft that were not in the grilling, for review: rows backwards by negative strides instead of a core mode; no address range check; every destination word is written (the first design skipped words left unchanged); `job_value` is one 16-bit word; `stop` is not resumable |
-| B2 | Size and speed are not targets (Jon: simple first, measure after). In Yosys for 7-series the core is 894 LUTs and 309 flip-flops without the mask image (the KS2's build) and 1,354 and 396 with it; the first design without LINE and EDGES is about 2,500 and 2,700 in the same measure |
+| B2 | Size and speed are not targets (Jon: simple first, measure after). In Yosys for 7-series the core is 894 LUTs and 309 flip-flops without the mask image (the KS2's build) and 1,354 and 396 with it; the first design without LINE and EDGES was about 2,500 and 2,700 in the same measure. In Vivado, alone at 100 MHz: 622 LUTs with +1.0 ns of slack on the KS2's part (no mask image), 1,060 and +1.3 ns on retro68k's (with it) |
 | B3 | A FIFO mover for retro68k's SD card and serial jobs is decided later; the second port (palette and register loads) is dropped |
 | B5 | Both machines reviewed revision 2 at 6793fd9 and agree. Their one change is in: A has its own stride (`job_astride`), since a 1-bit mask beside an 8-bit source would otherwise need its rows padded eightfold |
-| B4 | `rtl/blitter.v` is still the first design. The new blitter and `raster` are built on one branch and land together, and the first design is deleted with them, so main never lacks lines (Jon, at retro-z80's request). `geom` follows |
+| B4 | Closed: the new blitter and `raster` landed together in PR #14 and the first design was deleted with them (Jon, at retro-z80's request, so main never lacked lines). Both machines' wrappers and software need porting: the job formats are new. `geom` follows |
