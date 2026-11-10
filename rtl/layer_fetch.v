@@ -296,21 +296,12 @@ module layer_fetch #(
             end
         end
     end
-    reg           gs_l [0:NL-1];
-    reg  [9:0]    gm_l [0:NL-1], rn_l [0:NL-1];
-    reg  [3:0]    sl_l [0:NL-1];
-    always @(*) begin
-        for (n = 0; n < NL; n = n + 1) begin
-            gs_l[n] = (rem[n] == 10'd0);
-            gm_l[n] = gs_l[n] ? gmask_l[n] : rem[n];
-            sl_l[n] = top(gm_l[n]);
-            rn_l[n] = gm_l[n] & ~(10'd1 << sl_l[n]);
-        end
-    end
-    wire          gstart  = gs_l[pick];
-    wire [9:0]    gmask   = gm_l[pick];
-    wire [3:0]    sl_n    = sl_l[pick];
-    wire [9:0]    rem_n   = rn_l[pick];
+    // The slot to fill next, worked out once, for the layer picked
+    wire [9:0]    rem_p   = rem[pick];
+    wire          gstart  = (rem_p == 10'd0);                       // a new group
+    wire [9:0]    gmask   = gstart ? gmask_l[pick] : rem_p;
+    wire [3:0]    sl_n    = top(gmask);
+    wire [9:0]    rem_n   = gmask & ~(10'd1 << sl_n);
     wire [2:0]    pl_n    = sl_n[2:0] - 3'd2;                       // the data register (slots 9-2)
     wire          perpl   = (PLANAR != 0) && e_pl[pick];            // a pointer a plane
     wire [PIW-1:0] pi;                                               // the pointer the pick reads
