@@ -27,7 +27,7 @@ Each machine documents its own instantiation: the registers that drive a core, t
 | Blitter | `rtl/blitter.v` | [spec/blitter.md](spec/blitter.md) | [guide/blitter.md](guide/blitter.md) |
 | Rasteriser: lines and triangles | `rtl/raster.v` | [spec/raster.md](spec/raster.md) | [guide/raster.md](guide/raster.md) |
 | Geometry engine: 3D points to screen points | `rtl/geom.v` | [spec/geom.md](spec/geom.md) | [guide/geom.md](guide/geom.md) |
-| Audio engine: sample channels mixed to stereo (spec only so far) | none yet | [spec/audio_engine.md](spec/audio_engine.md) | none yet |
+| Audio engine: sample channels mixed to stereo | `rtl/audio_engine.v` | [spec/audio_engine.md](spec/audio_engine.md) | [guide/audio_engine.md](guide/audio_engine.md) |
 | Platform parts: HDMI output, DDR output register | `platform/artix7/hdmi_out.v`, `oddr.v`, `lint_stub.v`; `platform/sim/oddr.v` | [spec/platform.md](spec/platform.md) | [guide/platform.md](guide/platform.md) |
 
 ## Decisions

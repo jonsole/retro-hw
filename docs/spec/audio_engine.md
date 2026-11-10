@@ -1,6 +1,6 @@
 # Audio engine (audio_engine)
 
-Status: **draft**, revision 2, reviewed by both machines (their points are in; see U8). Not yet seen by Jon. No RTL yet. From retro68k's `fpga/rtl/audio.v` and its spec 6 (branch `live-ctrl`, 6955b38): the same sound, sample for sample, with the registers' bus, the interrupt and the DACs left to the machine.
+Status: **draft**, revision 2, reviewed by both machines (their points are in; see U8). Not yet seen by Jon. `rtl/audio_engine.v` implements it and passes its model test; no Vivado build yet. From retro68k's `fpga/rtl/audio.v` and its spec 6 (branch `live-ctrl`, 6955b38): the same sound, sample for sample, with the registers' bus, the interrupt and the DACs left to the machine.
 
 The audio engine plays sample channels from memory, in the spirit of the Amiga's Paula. Each channel plays a block of 8- or 16-bit samples at any pitch, with its own left and right volume, and needs no CPU work while it plays. At the end of a block a channel takes its address and length again, so a sample loops, or the next one can be queued. Once every output sample the engine visits the channels in turn, reads the one or two words each needs, and puts out one signed stereo sample.
 
@@ -93,7 +93,7 @@ One requester on the scheduler, as the blitter's port but reads only.
 | Name | Default | Meaning |
 |------|---------|---------|
 | `NCH` | 4 | Channels, 1 to 4 |
-| `AW` | 21 | Word address width, up to 23 |
+| `AW` | 21 | Word address width, 16 to 23 |
 | `LE` | 0 | 1: little-endian memory: of an 8-bit sample pair in a word, the first is the low byte |
 | `INTERP` | 1 | 0: no interpolation is built; every channel plays as with `NEAREST`, and one read a channel is enough |
 | `RDBACK` | 1 | 0: no read port (`rb_q` is 0) |
@@ -104,15 +104,15 @@ One requester on the scheduler, as the blitter's port but reads only.
 
 Every `rate` clocks (at least 200) the engine makes one output sample:
 
-1. Each channel with a start waiting takes its settings (4.2).
-2. The channels are worked on in order, 0 first. A playing channel's sample is read and interpolated (4.3, 4.4), multiplied by its two volumes and added to the left and right sums; then its position moves on (4.5). A channel not playing adds nothing.
+1. The channels are worked on in order, 0 first. As the engine begins a channel, a start waiting for it is taken (4.2).
+2. A playing channel's sample is read and interpolated (4.3, 4.4), multiplied by its two volumes and added to the left and right sums; then its position moves on (4.5). A channel not playing adds nothing.
 3. The sums, divided by 256, go to `out_l` and `out_r`, and `out_v` strobes.
 
 A channel's sample is 16 bits signed and a volume at most 64, so a product fits in 22 bits and four of them in 24: the sums always fit in 16 bits after the divide. One channel at full volume uses a quarter of the output range, as on the Amiga.
 
 ### 4.2 Blocks: starting, looping, queuing
 
-- A `start` strobe is remembered until the next output sample begins. The channel then takes LC and LEN as its block, goes to the block's first sample with a fraction of 0, strobes `ev`, and plays if LEN is not 0. This happens whether or not it was playing.
+- A `start` strobe is remembered until the engine next begins that channel, in the next output sample. The channel then takes LC and LEN as its block, goes to the block's first sample with a fraction of 0, strobes `ev`, and plays if LEN is not 0. This happens whether or not it was playing.
 - When a playing channel's position passes the end of its block, it takes LC and LEN again, carries on into that block by the amount it overshot (4.5), and strobes `ev`. If LEN is then 0 it stops. With `ONESHOT` it stops instead of taking them, and strobes `ev`.
 - A `stop` strobe clears `on` and forgets a start that was waiting, even one that would have been taken in that same clock (no `ev`, nothing taken). If the engine has already begun the channel in this output sample, it finishes it as if playing: its sample is in the sum, its position moves, and a block's end still takes LC and LEN and strobes `ev`; the channel is stopped all the same. From the next output sample it adds nothing.
 
@@ -148,11 +148,12 @@ This is the definition the test model follows. Volumes are min(the field, 64). `
 
 ```
 when an output sample begins:
-    for each channel n with a start waiting:
+    L = R = 0
+    for n = 0 .. NCH − 1:
+      if a start is waiting for n (and no stop comes in this clock):
         blk_lc[n] = LC[n];  blk_len[n] = LEN[n];  pos[n] = 0
         on[n] = (LEN[n] ≠ 0);  ev[n]
-    L = R = 0
-    for n = 0 .. NCH − 1, if on[n]:
+      if on[n]:
         i  = pos[n] >> 16;   frac = pos[n] & 0xFFFF
         i1 = (i + 1 < blk_len[n]) ? i + 1 : i
         s0 = sample(n, i);   s1 = sample(n, i1)
@@ -184,11 +185,11 @@ Each output sample takes a few clocks a channel besides its reads. With four cha
 
 ### 4.8 Sequence
 
-`ev` for a start strobes in the clock the output sample begins; `ev` for a block's end in the clock the channel's position moves. `out_v` strobes once per output sample, after the last channel. `on` changes in the clock of the `stop`, or with the `ev`.
+`ev` for a start strobes in the clock after the engine begins the channel; `ev` for a block's end in the clock after the channel's position moves. `out_v` strobes once per output sample, after the last channel. `on` changes in the clock of the `stop`, or with the `ev`.
 
 ### 4.9 Reset and the settings
 
-`rst` stops every channel, forgets waiting starts, drops any request and clears the output. The channel settings are kept in a small RAM and are not reset: after configuration they are CTRL 0, LC 0, LEN 0, STEP 0x10000 and VOL 0, and after a later reset whatever was last written. Software writes a channel's settings before it starts it.
+`rst` stops every channel, forgets waiting starts, drops any request and clears the output. The channel settings are kept in a small RAM and are not reset: after configuration they are CTRL 0, LC 0, LEN 0, STEP 0x10000, VOL 0 and POS 0, and after a later reset whatever was last written. Software writes a channel's settings before it starts it.
 
 ## 5. How a machine uses it
 
@@ -206,7 +207,8 @@ Each output sample takes a few clocks a channel besides its reads. With four cha
 | Test | What it checks |
 |------|----------------|
 | `test/audio_engine`, random | The core against a bit-exact model of 4.6: random settings, blocks, steps below and above 1, 8- and 16-bit, odd addresses, nearest and interpolated, one-shots, queued blocks written at `ev`, starts while playing, stops at every point of the engine's work (the bench watches where the engine is), writes and reads during an output sample, a memory that is quick or slow. Every output sample, every `ev` and `on` are compared. Both byte orders, `NCH` 4 and 2, `INTERP` 0 |
-| `test/audio_engine`, directed | retro68k's golden case (its `sim/atest`): four channels at once with queued blocks, a one-shot, a restart and an enable turned off and on |
+| `test/audio_engine`, targeted | A stop in the very clock the engine begins a channel, with a start waiting and without; a reset. Eight deliberate faults in the core are each caught |
+| retro68k's own audio test | Its golden case (`sim/atest`: four channels at once with queued blocks, a one-shot, a restart and an enable turned off and on) runs against the core once its wrapper is ported |
 | `drivers.sh`, the machines | As for the other cores |
 
 ## 7. Open points
@@ -217,9 +219,9 @@ Each output sample takes a few clocks a channel besides its reads. With four cha
 | U2 | 8-bit samples are a per-channel setting, as on retro68k, not a build parameter. A build of 8-bit only would save little |
 | U3 | LC, LEN and POS are `AW` + 1 bits (the byte address space). retro68k's registers are 23 bits with `AW` 21: its top bit would read 0 |
 | U4 | Read-back is a parameter. With the one-clock registered read it shares the engine's read of the settings, so it should cost far less than the 138 LUTs of retro68k's trial; to be measured. Without it POS cannot be read |
-| U5 | The multiplies: retro68k's unit uses three (interpolation, left, right). One shared multiplier is enough in the time there is, as in `geom`; to be measured |
+| U5 | The multiplies: retro68k's unit uses three (interpolation, left, right). The core uses one in turn, as `geom` does: about 12 clocks a channel besides its reads |
 | U6 | Carried over from retro68k's open points: interpolating across the end of a block into the next (s1 is s0 at a block's last sample now) |
 | U7 | More than 4 channels would need a wider sum, and a different shift or a limiter: four full-scale channels at volume 64 just fill 16 bits. Not in this revision |
 | U8 | From the machines' review of revision 1: settings taken once a channel a sample; a one-clock registered read (both buses answer a clock after the strobe); one exact rule for a stop during the engine's work, the simplest to build, not retro68k's; the second read only when needed; a late engine delays the sample; the note on writing LC and LEN |
 | U9 | retro68k's spec 6 gives reset values for VOL and STEP; with this core its start-up code writes them. Jon's call for retro68k |
-| U10 | Sizes to report when the RTL is measured: `NCH` 4 and 2, `INTERP` 1 and 0, `RDBACK` 1 and 0 |
+| U10 | Size, Yosys for 7-series (logic cells; besides them 35 RAM32M, about 140 LUTs, and one DSP block in every build): defaults 436 and 332 flip-flops; `RDBACK` 0: 384; `INTERP` 0: 327; `NCH` 2: 425; `NCH` 2 with `INTERP` 0 and `RDBACK` 0: 243. Vivado figures from the machines' gates to come. retro68k's unit is 1,228 LUTs in Vivado |
