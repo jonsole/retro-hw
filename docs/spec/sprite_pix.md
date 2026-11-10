@@ -47,7 +47,7 @@ None.
 
 ## 4. Behaviour
 
-- **Span.** The sprite draws while `act`, `hs` ≤ `t` < `xe`, and it was not flushed during this line. Outside the span `opaque` is 0.
+- **Span.** The sprite draws while `act`, `hs` ≤ `t` < `xe`, and it was not flushed during this line. Outside the span `opaque` is 0. The span is kept as a flag, set as `t` comes to `hs` and cleared as it comes to `xe`, so `hs` must not be after `xe`, and `hs` must be 16 or more (`sprite_fetch`'s `p_hs` and `p_xe` keep the first; HSTART the second). With `hs` = `xe` the span is empty.
 - **Pixels in a word.** The word's high bits are the first pixel: 8 pixels of 2 bits, 4 of 4 bits, 2 of 8 bits.
 - **Stepping.** The unit keeps a pixel in the front word and an 11-bit fraction. Each clock in the span it adds `xstep`; the words passed go (`rp` moves on, by more than one when the sprite is shrunk).
 - **End of span.** At the span's last pixel the word in use goes too, used up or not, and the place goes back to the start of a word. So each line takes exactly the words `sprite_fetch` fetched for it.
@@ -65,7 +65,7 @@ None.
 
 ## 6. Test plan
 
-There is no unit test of its own yet. The machines' video tests check it with whole frames against a model: every bits-per-pixel value, scaling up and down, sprites partly left of the screen, flushes while drawn, and underruns.
+`test/sprites`' `tb_lock_pix` runs the core in lockstep with a frozen copy of its earlier self (`ref/sprite_pix_ref.v`, from before the span became a flag) for 3 million clocks: random legal settings a line (the earliest start, the line's end, empty and one-pixel spans), every bits-per-pixel value and step, a FIFO that fills by spells so underruns come up, flushes, video off. Every output is compared every clock. There is no model test of its own yet. The machines' video tests check it with whole frames against a model: every bits-per-pixel value, scaling up and down, sprites partly left of the screen, flushes while drawn, and underruns.
 
 ## 7. Open points
 

@@ -64,8 +64,16 @@ module sprite_pix (
     wire       avail = cnt[5] ? (cnt == 6'd32) : (cnt != 6'd0);   // (more than 32: the reads have passed the writes)
 
     reg  skip;                         // flushed during this line: off until the next
-    wire in_span = act && !skip && (t >= hs) && (t < xe);
-    wire last_px = (t + 1'b1 == xe);
+    // The span is a flag: set as t comes to hs, cleared as it comes to xe
+    // (hs must not be after xe, and both after the settings are taken at 12)
+    reg  span;
+    wire [9:0] tn = t + 1'b1;
+    wire last_px  = (tn == xe);
+    wire in_span  = act && !skip && span;
+    always @(posedge clk_pix) begin
+        if (last_px || t == 10'd12) span <= 1'b0;
+        else if (tn == hs)          span <= 1'b1;
+    end
 
     reg  [2:0]  p;                     // pixel in the word
     reg  [10:0] f;                     // ... and the fraction
