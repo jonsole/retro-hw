@@ -172,6 +172,80 @@ Checked after the set-up: `job_bad`; `job_mask` 3; `job_mask` 1 without `MASKIMG
 
 `rst` makes the core idle with no request, `err` clear and the descriptor address 0.
 
+### 4.8 The exact result
+
+This is the definition the test model follows. A bit position n means bit 7 − (n mod 8) of the byte at address n div 8, so positions run left to right through a row. All byte addresses are taken modulo 2^(AW + 1).
+
+```
+bits = 1 << job_bpp
+for r = 0 .. job_height − 1:                              # rows in the order given
+    pd = 8 × (job_daddr + r × job_dstride) + job_dbit × bits
+    pb = 8 × (job_baddr + r × job_bstride) + job_bbit × bits
+    pa = 8 × (job_aaddr + r × job_astride) + job_abit
+    for i = 0 .. job_width − 1:                           # pixels in the order worked
+        k = −i if job_rtl else i
+        C = the pixel at bit position pd + k × bits       # bits wide
+        B = the pixel of job_value over C's place (below)   if job_bconst
+            the pixel at bit position pb + k × bits       otherwise
+        A = 1                                             if job_mask = 0
+            the bit at bit position pa + k                if job_mask = 1
+            1 if B ≠ job_key's low bits, else 0           if job_mask = 2
+        for each bit j of the pixel:
+            D[j] = job_minterm[4 × A + 2 × B[j] + C[j]]
+        the pixel at pd + k × bits becomes D
+```
+
+- **The constant.** `job_value` lies over every destination memory word (the two bytes at an even address, in address order): a pixel takes the bits of `job_value` at its own place in its word. So a pattern in `job_value` lines up with memory words, not with the rectangle's left edge, and a plain colour is the pixel value repeated to fill 16 bits (0x5555 for colour 1 at 2 bits, 0x0707 for colour 7 at 8).
+- **What is written.** Only bytes that hold at least one pixel of the row are written. In such a byte, pixels outside the row keep their value, which is why the row's first and last words may need C read (4.3).
+- **Overlap.** The result above is what the core gives whenever no memory word is written before it is read as A or B for a later pixel. Reads happen a word at a time, a destination word's reads before its write, and a B word is read only when its first bit is needed. So: a destination to the left of or above the source is safe as given; a destination to the right in the same rows needs `job_rtl`; one below needs the rows bottom-up (negative strides, 4.4). With an overlap worked the wrong way the result is not specified.
+- **Nothing else changes.** No word outside the destination rows is written, and A and B are never written.
+
+### 4.9 Worked examples
+
+Minterms: bit a×4 + b×2 + c gives D. The three every program uses:
+
+| Minterm | D | Use |
+|---------|---|-----|
+| 0xCC | B | Copy, or fill with a constant B |
+| 0xCA | B where A is 1, else C | Cut out: copy through a mask |
+| 0x66 | B xor C | Invert with a constant; draw and undraw |
+
+A 320-pixel-wide, 8-bit bitmap at byte address 0x10000 (stride 320) in each case.
+
+| Job | Ports |
+|-----|-------|
+| Fill the 32×16 rectangle at (40, 20) with colour 7 | `minterm` 0xCC, `mask` 0, `bpp` 3, `bconst` 1, `value` 0x0707, `width` 32, `height` 16, `daddr` 0x10000 + 20 × 320 + 40, `dbit` 0, `dstride` 320. One write a word: 16 words a row |
+| Copy a 32×32 image at 0x20000 (stride 32) to (100, 50) | `minterm` 0xCC, `mask` 0, `bconst` 0, `baddr` 0x20000, `bstride` 32, `daddr` 0x10000 + 50 × 320 + 100, `dstride` 320, `width` 32, `height` 32. A read and a write a word |
+| The same, with colour 0 transparent | As the copy, with `minterm` 0xCA, `mask` 2, `key` 0. A B read, a C read and a write a word |
+| An 8×8 character from a 1-bit font at 0x30000 (one byte a row) in colour 15 at (8, 8) | `minterm` 0xCA, `mask` 1, `aaddr` 0x30000 + 8 × character, `abit` 0, `astride` 1, `bconst` 1, `value` 0x0F0F, `daddr` 0x10000 + 8 × 320 + 8, `dstride` 320, `width` 8, `height` 8 |
+| Scroll the whole 320×200 picture down 8 rows | A copy with the rows bottom-up: `baddr` 0x10000 + 191 × 320, `daddr` 0x10000 + 199 × 320, `bstride` −320, `dstride` −320, `width` 320, `height` 192, `rtl` 0 |
+| Scroll it right 4 pixels | A copy right to left: `rtl` 1, `baddr` 0x10000 + 315 (the last source pixel of row 0), `daddr` 0x10000 + 319, strides 320, `width` 316, `height` 200 |
+
+At 4 bits a pixel, an object at an odd x has `dbit` 1: a 16-pixel-wide row then spans five bytes, the first and last half covered, so its first and last words are read as C and merged even for a plain copy.
+
+### 4.10 Sequences
+
+**A descriptor load** (`start_ld`, or a chain). The core reads the 16 words at the descriptor address in rising order, one request after another. As each pair comes back it strobes `dl_v` with `dl_i` 0 to 7 and the two words as read from memory (`dl_w0` the lower address). While `dl_wait` is high it holds the next strobe. After the eighth, the set-up starts.
+
+**The set-up.** `su_v` is high for 8 clocks with `su_i` counting 0 to 7. A wrapper with its job in a RAM reads long word `su_i` each clock and latches its fields; a wrapper with the job in flip-flops ignores it. From the clock after, the job ports must be steady until the job ends.
+
+**A two-word fill** (no reads), with the scheduler granting every other clock:
+
+```
+ clk       0    1    2    3    4    5    6
+ su_v      ...1  0
+ mem_req        1    1    1    1    0
+ mem_we         1    1    1    1
+ mem_addr       w0   w0   w1   w1
+ mem_ack             1         1
+ busy      1    1    1    1    1    0
+ done                               1        (the job has job_irq, or the chain ends)
+```
+
+**A chain.** When a job ends with `job_next` not 0, `da_q` becomes `job_next` and the load, set-up and job follow at once, with `busy` high throughout. `done` strobes at each job's end that has `job_irq`, and once more when the chain ends.
+
+**Strobes while busy.** `start_ld`, `start_run` and `da_we` are ignored. `stop` during a descriptor load or set-up ends the chain before the job starts.
+
 ## 5. How a machine uses it
 
 - A wrapper with the job registers (a small RAM of 8 long words is cheapest), which decodes the job onto the ports in the clocks of `su_v`, stores descriptor long words on `dl_v`, and turns register writes into `start_ld`, `start_run`, `stop` and `da_we`.

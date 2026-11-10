@@ -84,7 +84,59 @@ Screen y grows downwards if the matrix says so: the engine does not flip any axi
 
 The job ends as a blitter job does: `done` if `job_irq`, then the next descriptor if `job_next` is not 0, else idle. A chain of jobs with different view blocks transforms several objects with no CPU in between.
 
-### 4.4 Errors and reset
+### 4.4 The exact result
+
+This is the definition the test model follows. Words are signed 16-bit unless said; `>>` is an arithmetic shift (it rounds down); floor division rounds down.
+
+```
+sat16(v) = max(−32768, min(32767, v))        satp(v) = max(−32767, min(32767, v))
+
+read the view block:  m[0..8], tx, ty, tz, d (unsigned), cx, cy, znear
+for n = 0 .. job_count − 1:
+    x, y, z = the words at job_vaddr + 6n, + 6n + 2, + 6n + 4
+    vx = sat16(((m[0]·x + m[1]·y + m[2]·z) >> 14) + tx)      # the sum is 34 bits, kept whole
+    vy = sat16(((m[3]·x + m[4]·y + m[5]·z) >> 14) + ty)
+    vz = sat16(((m[6]·x + m[7]·y + m[8]·z) >> 14) + tz)
+    if job_persp and vz < znear:
+        sx = sy = −32768                                     # 0x8000: behind
+    else if job_persp:
+        sx = satp(cx + floor((vx · d) / vz))                 # the product is 33 bits, the
+        sy = satp(cy + floor((vy · d) / vz))                 # quotient kept whole until satp
+    else:
+        sx = satp(cx + vx);  sy = satp(cy + vy)
+    write sx, sy, vz to job_oaddr + 6n, + 6n + 2, + 6n + 4
+```
+
+- A point's three words are all read before any of its results is written, so results may overwrite the points (`job_oaddr` = `job_vaddr`). Results written elsewhere must not overlap points still to be read.
+- The view block is read once, before the first point; changing it in memory during a job has no effect on that job.
+- With znear below 1 a divide by zero or a negative vz can be asked for: the result is then not specified. The wrapper may reject it with `job_bad`.
+
+### 4.5 A worked example
+
+A view turned 30° about the y axis, 400 units in front of the eye, on a 320×200 screen with the eye 256 units from it. cos 30° is 0x376D and sin 30° 0x2000 in 2.14.
+
+| View block words | Values |
+|------------------|--------|
+| 0–8 (matrix rows) | 0x376D, 0, 0x2000; 0, 0x4000, 0; 0xE000, 0, 0x376D |
+| 9–11 (tx, ty, tz) | 0, 0, 400 |
+| 12 (d) | 256 |
+| 13, 14 (cx, cy) | 160, 100 |
+| 15 (znear) | 16 |
+
+| Point (x, y, z) | View (vx, vy, vz) | Written (sx, sy, vz) |
+|-----------------|-------------------|----------------------|
+| (100, −50, 200) | (186, −50, 523) | (251, 75, 523) |
+| (−100, 50, −200) | (−187, 50, 276) | (−14, 146, 276) |
+| (0, 0, −390) | (−195, 0, 62) | (−646, 100, 62) |
+| (0, 0, −460) | (−230, 0, 1) | (0x8000, 0x8000, 1): behind |
+
+For the first point: vx = ((14189 × 100 + 8192 × 200) >> 14) = 186; sx = 160 + floor(186 × 256 / 523) = 160 + 91 = 251; sy = 100 + floor(−50 × 256 / 523) = 100 − 25 = 75 (the divide rounds down, from −24.47). The third point is in front of the near plane but far off the left of the screen: the rasteriser's window clips what is drawn from it.
+
+### 4.6 Sequence
+
+After the descriptor load and set-up (the blitter's 4.10), the 16 words of the view block are read in rising order. Then, for each point: three reads; the nine products, one a clock, summed a row at a time; with `job_persp` the near test, two more products and the two divides one after the other; then three writes. The core asks for the next point's reads as soon as this point's writes are taken. `stop` is taken between points.
+
+### 4.7 Errors and reset
 
 `job_bad` ends the job and the chain with `err` set, as in the blitter (4.6). Reset is the blitter's.
 

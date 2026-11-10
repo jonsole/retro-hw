@@ -93,7 +93,83 @@ So two triangles that share an edge fill every pixel along it exactly once, a tr
 
 The job ends as a blitter job does: `done` if `job_irq`, then the next descriptor if `job_next` is not 0, else idle.
 
-### 4.5 Errors and reset
+### 4.5 The exact result
+
+This is the definition the test model follows. A pixel's place is the bit position 8 × (`job_daddr` + y × `job_dstride`) + x × bits, as in the blitter (4.8), with the same packing.
+
+```
+plot(x, y, A):
+    if clip_xmin ≤ x ≤ clip_xmax and clip_ymin ≤ y ≤ clip_ymax:
+        C = the pixel at (x, y);  B = job_value's low bits
+        each bit j:  D[j] = job_minterm[4 × A + 2 × B[j] + C[j]]
+        the pixel at (x, y) becomes D
+
+LINE:
+    dx = |x1 − x0|;  dy = |y1 − y0|
+    sx = +1 if x1 ≥ x0 else −1;  sy = +1 if y1 ≥ y0 else −1
+    xmajor = (dx ≥ dy);  major = max(dx, dy);  minor = min(dx, dy)
+    err = major div 2;  (x, y) = (x0, y0)
+    for i = 0 .. major:
+        if not (job_nolast and i = major):
+            plot(x, y, job_pattern[15 − (i mod 16)])
+        err = err − minor
+        if err < 0:
+            err = err + major
+            step the minor axis (y by sy if xmajor, else x by sx)
+        step the major axis (x by sx if xmajor, else y by sy)
+
+TRI:
+    sort the points by y:  (xt, yt), (xm, ym), (xb, yb)
+    slope(a, b) = floor((xb − xa) × 65536 / (yb − ya))       # only for yb > ya
+    for y = yt .. yb − 1:
+        XL = xt × 65536 + slope(t, b) × (y − yt)              # the long edge
+        XS = xt × 65536 + slope(t, m) × (y − yt)   if y < ym  # the short edge
+             xm × 65536 + slope(m, b) × (y − ym)   otherwise
+        left = ceil(min(XL, XS) / 65536);  right = ceil(max(XL, XS) / 65536)
+        for x = left .. right − 1:  plot(x, y, 1)
+```
+
+- A LINE whose two points lie beyond the same side of the window plots nothing; the core skips the stepping, which gives the same result.
+- LINE pixels are written one at a time, in the order stepped, so with a minterm that depends on C a pixel visited twice by joined lines is combined twice (hence `job_nolast`).
+- TRI pixels are each written once. A span is written a memory word at a time: whole pixels of the word inside the span take D, the others keep their value; bytes with no pixel of the span are not written.
+- With two points at the same y the sort's order between them does not change the result.
+- Only bytes holding a plotted pixel are ever written.
+
+### 4.6 Worked examples
+
+**A line** from (2, 1) to (9, 4): dx 7, dy 3, x is the longer axis, the error term starts at 3. The pixels, in order:
+
+```
+(2,1) (3,1) (4,2) (5,2) (6,3) (7,3) (8,4) (9,4)
+```
+
+From (9, 4) to (2, 1) the same pixels come out in the opposite order. This holds for these two points; in general a line and its reverse may differ by a pixel where the error term is exactly on a tie. With `job_pattern` 0xF0F0 the first four pixels have A 1 and the next four A 0; with minterm 0xCA only the first four are drawn.
+
+**A triangle** with points (10, 2), (3, 6), (14, 9), in any order. Sorted: top (10, 2), middle (3, 6), bottom (14, 9). Slopes: long edge 4/7 = 0x0000_9249; top to middle −7/4 = 0xFFFE_4000; middle to bottom 11/3 = 0x0003_AAAA.
+
+| Row y | Pixels x |
+|-------|----------|
+| 2 | none (both edges at x = 10) |
+| 3 | 9 to 10 |
+| 4 | 7 to 11 |
+| 5 | 5 to 11 |
+| 6 | 3 to 12 |
+| 7 | 7 to 12 |
+| 8 | 11 to 13 |
+
+Row 9, the bottom point's, is not drawn: a triangle below sharing that point or edge draws it.
+
+**Job ports** for that triangle in colour 5 on a 320-wide 8-bit bitmap at 0x10000, drawn over whatever is there: `tri` 1, `minterm` 0xCC, `bpp` 3, `value` 5, the six coordinates, `daddr` 0x10000, `dstride` 320, and the window 0, 319, 0, 199. With minterm 0x66 instead, drawing it twice restores the bitmap.
+
+### 4.7 Sequences
+
+The descriptor load and set-up are the blitter's (4.10). Then:
+
+- **LINE.** About 16 clocks to find the first row's address, then one clock a pixel stepped. A pixel inside the window is one write (after one read, where 4.1 says); the stepping waits for it.
+- **TRI.** The sort and the three divides, one after another on the one divider, about 70 clocks. Then each row: one clock to step both edges, and the span's words, one write each (after one read where needed). A row outside the window, or with an empty span, costs its one clock.
+- `stop` is taken between pixels (LINE) or rows (TRI).
+
+### 4.8 Errors and reset
 
 `job_bad`, or a TRI job without `TRI`, ends the job and the chain with `err` set, as in the blitter (4.6). Reset is the blitter's.
 
