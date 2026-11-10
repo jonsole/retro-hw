@@ -76,12 +76,14 @@ module layer_pix #(
     always @(posedge clk_pix5) fill_s <= {fill_s[0], fill_t};
     wire        avail  = fill_s[1] != take_t;
     // The window is a flag: set as the beam comes to xs, cleared as it
-    // comes to xe (xs must not be after xe, nor xe after the line's end)
+    // comes to xe (xs must not be after xe, nor xe after the line's end).
+    // With xs = xe the clear wins: an empty window. line_start clears it
+    // too, whatever xe was, so settings not yet valid cannot leave it set
     reg         win;
     wire        at_xe  = (hn == xe);
     wire        in_win = active && win;
     always @(posedge clk_pix) begin
-        if (at_xe)         win <= 1'b0;
+        if (at_xe || line_start) win <= 1'b0;
         else if (hn == xs) win <= 1'b1;
     end
     wire        tl     = (TILES != 0) && tile;

@@ -32,7 +32,7 @@ One layer's pixel side. It takes the layer's 16-pixel groups from its data regis
 | `line_start` | in | 1 | One clock at the start of the horizontal blank: the line's setup starts | `clk_pix` |
 | `ready` | in | 1 | The data registers hold this line's data (the fetch has restarted for it) | `clk_pix`, any delay |
 | `active` | in | 1 | The layer shows on this line | Stable through the line |
-| `xs`, `xe` | in | 11, 11 | The window: pixels `xs` to `xe` − 1. `xs` ≤ `xe`, and `xe` at most the number of pixels `hn` counts in a line: the window opens in the clock `hn` = `xs` and closes in the clock `hn` = `xe`, so a window whose end `hn` never reaches would stay open. `xs` = `xe` is an empty window | Stable through the line |
+| `xs`, `xe` | in | 11, 11 | The window: pixels `xs` to `xe` − 1. `xs` ≤ `xe`, and `xe` at most the number of pixels `hn` counts in a line: the window opens in the clock `hn` = `xs` and closes in the clock `hn` = `xe`, so a window whose end `hn` never reaches stays open until `line_start`, which also closes it. With `xs` = `xe` the close wins: an empty window, at any position | Stable through the line |
 | `pos0` | in | 4 | The first source pixel shown in the first group (fine scroll) | Stable through the line |
 | `transp` | in | 1 | Colour value 0 is transparent | Live: applies from the next pixel. A raw crossing from the machine's clock (4.4) |
 | `palofs` | in | 4 | Palette offset: the top 4 bits of the index for a pixel of up to 4 bits | Live: applies from the next pixel. A raw crossing from the machine's clock (4.4) |

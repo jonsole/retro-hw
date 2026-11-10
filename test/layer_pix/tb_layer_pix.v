@@ -296,6 +296,15 @@ module tb_layer_pix;
         // palofs changed live, mid-line: from the next pixel
         pal_x = 70; pal2 = 4'hB;
         line(1, 0, 0, 1, 0, 0, 0,   4'h5, 0, 11'd0,  11'd160, 99, 1, 1);
+        pal_x = 0;
+        // Empty windows (the close wins over the open), at the line's start,
+        // in it and at its end; then a window to the line's very end, and a
+        // full line after them
+        line(1, 0, 0, 2, 0, 0, 0,   4'h9, 0, 11'd0,   11'd0,   99, 1, 1);
+        line(1, 0, 0, 2, 0, 0, 0,   4'h9, 0, 11'd60,  11'd60,  99, 1, 1);
+        line(1, 1, 0, 0, 3, 0, 0,   4'h9, 0, 11'd170, 11'd170, 99, 1, 0);
+        line(1, 0, 0, 2, 0, 0, 0,   4'h9, 0, 11'd10,  11'd170, 99, 1, 1);
+        line(1, 0, 0, 1, 0, 0, 0,   4'h5, 0, 11'd0,   11'd160, 99, 1, 1);
         $display("%0d lines, %0d pixels checked", lines, checked);
         if (errors == 0) $display("TEST PASSED");
         else             $display("TEST FAILED: %0d errors", errors);
