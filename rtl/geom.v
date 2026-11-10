@@ -59,7 +59,7 @@ module geom #(
     localparam [4:0] S_IDLE = 5'd0,  S_DLR = 5'd1,  S_DLW = 5'd2,  S_SU  = 5'd3,  S_CHK = 5'd4,
                      S_VB   = 5'd5,  S_PR  = 5'd6,  S_M0  = 5'd7,  S_M1  = 5'd8,  S_M2  = 5'd9,
                      S_V    = 5'd10, S_N   = 5'd11, S_D0  = 5'd12, S_D1  = 5'd13, S_D2  = 5'd14,
-                     S_DV   = 5'd15, S_DE  = 5'd16, S_W   = 5'd17, S_END = 5'd18;
+                     S_DV   = 5'd15, S_DE  = 5'd16, S_W   = 5'd17, S_END = 5'd18, S_D3  = 5'd19, S_DF  = 5'd20;
     reg  [4:0]    st;
     reg  [AW:0]   da;
     assign da_q = {{(23-AW){1'b0}}, da};
@@ -90,9 +90,11 @@ module geom #(
     wire [1:0]    kc = (k == 4'd0 || k == 4'd3 || k == 4'd6) ? 2'd0
                      : (k == 4'd1 || k == 4'd4 || k == 4'd7) ? 2'd1 : 2'd2;      // the entry's column
     wire signed [15:0] pc = (kc == 2'd0) ? px : (kc == 2'd1) ? py : pz;
-    // A view coordinate: the row's sum >> 14, plus its translation, limited to 16 bits
-    wire signed [33:0] sum  = acc + mp;
-    wire signed [20:0] v_w  = {sum[33], sum[33:14]} + {{5{vw[15]}}, vw};          // (vw: the row's t)
+    // Every product goes into acc and is used from there, so that the multiply,
+    // its register and the accumulator are one DSP block (a second user of mp
+    // made Vivado build the multiplier twice).
+    // A view coordinate: the row's total >> 14, plus its translation, limited to 16 bits
+    wire signed [20:0] v_w  = {acc[33], acc[33:14]} + {{5{vw[15]}}, vw};          // (vw: the row's t)
     wire signed [15:0] v_s  = (v_w > 21'sd32767) ? 16'sh7FFF : (v_w < -21'sd32768) ? 16'sh8000 : v_w[15:0];
 
     // The divider: |product| / vz, 32 quotient bits, then the sign with rounding down
@@ -100,12 +102,13 @@ module geom #(
     reg  [16:0]   dv_r;
     reg  [5:0]    dv_i;
     reg           dv_neg;
-    wire [33:0]   mp_abs = mp[33] ? -mp : mp;
+    wire [33:0]   mp_abs = acc[33] ? -acc : acc;
     wire [17:0]   dv_t   = {dv_r, dv_q[31]} - {2'b00, vz};
     wire [33:0]   dv_mag = {2'b00, dv_q} + {33'd0, (dv_r != 17'd0)};
     wire signed [33:0] dv_res = dv_neg ? -$signed(dv_mag) : $signed({2'b00, dv_q});
     // A screen coordinate: the centre plus the offset, limited to +-32767
-    wire signed [34:0] s_per = {{19{vw[15]}}, vw} + {dv_res[33], dv_res};         // (vw: cx or cy)
+    reg  signed [33:0] dq;                                                        // the quotient, registered
+    wire signed [34:0] s_per = {{19{vw[15]}}, vw} + {dq[33], dq};                 // (vw: cx or cy)
     wire signed [15:0] v_o   = (vi == 4'd13) ? vx : vy;
     wire signed [34:0] s_ort = {{19{vw[15]}}, vw} + {{19{v_o[15]}}, v_o};
     function signed [15:0] satp(input signed [34:0] v);
@@ -218,11 +221,12 @@ module geom #(
             S_M1: begin
                 mp <= ma * mb;
                 vi <= (kc == 2'd2) ? ((k == 4'd2) ? 4'd9 : (k == 4'd5) ? 4'd10 : 4'd11) : k + 4'd1;   // the row's t, or the next entry
-                st <= (kc == 2'd2) ? S_V : S_M2;
+                st <= S_M2;
             end
             S_M2: begin
-                acc <= sum;  k <= k + 1'b1;
-                st  <= S_M0;
+                acc <= acc + mp;
+                if (kc == 2'd2) st <= S_V;
+                else begin k <= k + 1'b1;  st <= S_M0; end
             end
             S_V: begin
                 case (k)
@@ -260,7 +264,12 @@ module geom #(
                 st <= S_D2;
             end
             S_D2: begin
-                dv_q <= mp_abs[31:0];  dv_r <= 17'd0;  dv_neg <= mp[33];  dv_i <= 6'd0;
+                acc <= acc + mp;                                         // (acc was 0)
+                st  <= S_D3;
+            end
+            S_D3: begin
+                dv_q <= mp_abs[31:0];  dv_r <= 17'd0;  dv_neg <= acc[33];  dv_i <= 6'd0;
+                acc  <= 34'sd0;
                 st   <= S_DV;
             end
             S_DV: begin
@@ -269,7 +278,11 @@ module geom #(
                 dv_i <= dv_i + 1'b1;
                 if (dv_i == 6'd31) st <= S_DE;
             end
-            S_DE: begin
+            S_DE: begin                                                  // the quotient, signed and rounded down
+                dq <= dv_res;
+                st <= S_DF;
+            end
+            S_DF: begin                                                  // ... plus the centre, limited
                 if (!ydiv) begin sx <= satp(s_per);  ydiv <= 1'b1;  vi <= 4'd12;  st <= S_D0; end
                 else       begin sy <= satp(s_per);  ri <= 2'd0;  st <= S_W; end
             end

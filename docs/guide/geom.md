@@ -42,4 +42,4 @@ A chain of jobs with a view block each transforms several objects with no CPU in
 - **Matrix entries are within ±2.0.** Fold scale and aspect into the matrix, or into d.
 - **Results may overwrite the points** (the same address for both), but must not overlap points still to be read.
 - **Off-screen points are still written,** limited to ±32767. The rasteriser's window clips what is drawn from them.
-- **It is not fast per point:** about 110 clocks with perspective. A few hundred points a frame is comfortable.
+- **It is not fast per point:** about 120 clocks with perspective. A few hundred points a frame is comfortable.

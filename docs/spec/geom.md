@@ -16,7 +16,7 @@ Like the blitter it has no registers, takes one job at a time with a chain to th
 | Projection | Perspective (divide by z) or none (`job_persp`) |
 | Behind the eye | A point nearer than the near plane is marked, not projected |
 | Arithmetic | One 16×16 multiplier and one serial divider, shared over the steps |
-| Time | About 110 clocks and 6 memory accesses a point with perspective, 35 without |
+| Time | About 120 clocks and 6 memory accesses a point with perspective, 40 without |
 | Registers | None: the wrapper's |
 
 ## 2. Ports
@@ -161,6 +161,7 @@ After the descriptor load and set-up (the blitter's 4.10), the 16 words of the v
 | G1 | Choices made in this draft, for review: the view block in memory rather than on ports; three words out a point (screen x, screen y, view z); 0x8000 marks a point behind the near plane; the divide rounds down; no axis is flipped; one view block a job |
 | G2 | 16-bit fixed point was chosen for size. A world larger than ±32767 units, or a need for sub-pixel screen positions, would be a later revision |
 | G4 | Both machines reviewed revision 1 at 6793fd9. retro-z80's two changes are in: projected values saturate to ±32767 so 0x8000 only ever means behind, and the divide rounds down, matching its own register-driven geometry unit so both give the same screen points |
+| G7 | Both machines' Vivado builds of the first RTL (831ef71) used two DSP blocks and the KS2's part missed 100 MHz by 0.2 ns, on the divide's end: rounding, sign, the centre add and the limit in one clock. The quotient is now registered first, and every product goes through the accumulator so the multiply is built once |
 | G6 | Size, Yosys for 7-series: 758 LUTs, 427 flip-flops and one DSP block |
 | G5 | The RTL is simple rather than fast (Jon: simple first): one product every three clocks and a 32-step serial divide. A pipelined multiplier and a shared radix-4 divide would roughly halve a point's time if it matters |
 | G3 | Not in this revision: clipping lines and triangles at the near plane (the CPU does it, from view z), back-face tests, lighting, and driving the rasteriser directly |
