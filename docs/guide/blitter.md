@@ -1,6 +1,6 @@
 # Wiring in the blitter
 
-`blitter` is a blitter with four DMA channels. It copies, fills, masks, adds and draws lines in memory, a word at a time, while the CPU gets on with something else. The spec is `docs/spec/blitter.md`. This guide is for someone putting it into a new machine.
+`blitter` is a blitter with four DMA channels. It copies, fills, masks, adds and draws lines in memory, a word at a time, while the CPU gets on with something else. The spec is `docs/spec/blitter_v1.md`. This guide is for someone putting it into a new machine.
 
 ## What you write
 

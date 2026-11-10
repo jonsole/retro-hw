@@ -1,4 +1,4 @@
-// The blitter (docs/spec/blitter.md): four DMA channels, their
+// The blitter (docs/spec/blitter_v1.md): four DMA channels, their
 // scheduler and one datapath. The machine's wrapper keeps
 // the registers: it holds the job registers, decodes the running channel's
 // job onto the job_ ports, stores loaded descriptors, and turns register

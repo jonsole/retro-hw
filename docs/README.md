@@ -24,7 +24,10 @@ Each machine documents its own instantiation: the registers that drive a core, t
 | Layer pixel unit | `rtl/layer_pix.v` | [spec/layer_pix.md](spec/layer_pix.md) | [guide/layer_pix.md](guide/layer_pix.md) |
 | Layer fetch | `rtl/layer_fetch.v` | [spec/layer_fetch.md](spec/layer_fetch.md) | [guide/layer_fetch.md](guide/layer_fetch.md) |
 | Copper engine | `rtl/copper_engine.v` | [spec/copper_engine.md](spec/copper_engine.md) | [guide/copper_engine.md](guide/copper_engine.md) |
-| Blitter | `rtl/blitter.v` | [spec/blitter.md](spec/blitter.md) | [guide/blitter.md](guide/blitter.md) |
+| Blitter, first design (being replaced) | `rtl/blitter.v` | [spec/blitter_v1.md](spec/blitter_v1.md) | [guide/blitter.md](guide/blitter.md) |
+| Blitter, redesign (spec only) | – | [spec/blitter.md](spec/blitter.md) | – |
+| Rasteriser: lines and triangles (spec only) | – | [spec/raster.md](spec/raster.md) | – |
+| Geometry engine (spec only) | – | [spec/geom.md](spec/geom.md) | – |
 | Platform parts: HDMI output, DDR output register | `platform/artix7/hdmi_out.v`, `oddr.v`, `lint_stub.v`; `platform/sim/oddr.v` | [spec/platform.md](spec/platform.md) | [guide/platform.md](guide/platform.md) |
 
 ## Decisions
