@@ -196,4 +196,4 @@ Checked after the set-up: `job_bad`; `job_mask` 3; `job_mask` 1 without `MASKIMG
 | B2 | Size and speed are not targets (Jon: simple first, measure after). The first design is about 3,200 LUTs in retro-z80's KS2 build with LINE and EDGES |
 | B3 | A FIFO mover for retro68k's SD card and serial jobs is decided later; the second port (palette and register loads) is dropped |
 | B5 | Both machines reviewed revision 2 at 6793fd9 and agree. Their one change is in: A has its own stride (`job_astride`), since a 1-bit mask beside an 8-bit source would otherwise need its rows padded eightfold |
-| B4 | `rtl/blitter.v` is still the first design. It is replaced, not kept beside this one, when the new RTL lands; a machine that needs LINE and EDGES stays on an older commit until `raster` exists |
+| B4 | `rtl/blitter.v` is still the first design. The new blitter and `raster` are built on one branch and land together, and the first design is deleted with them, so main never lacks lines (Jon, at retro-z80's request). `geom` follows |
