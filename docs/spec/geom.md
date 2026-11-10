@@ -1,6 +1,6 @@
 # Geometry engine (geom)
 
-Status: **draft**, revision 1 for review. A new core, from the blitter redesign. No RTL yet.
+Status: **draft**, revision 1, reviewed by both machines. A new core, from the blitter redesign. `rtl/geom.v` implements it.
 
 The geometry engine turns a list of 3D points in memory into screen coordinates: it rotates and translates each point by a matrix, projects it, and writes the result back to memory. The CPU then decides what to draw from the screen points (which faces are visible, in what order) and builds jobs for the rasteriser ([raster](raster.md)). The engine does the arithmetic a small CPU is slow at: nine multiplies and two divides a point.
 
@@ -16,7 +16,7 @@ Like the blitter it has no registers, takes one job at a time with a chain to th
 | Projection | Perspective (divide by z) or none (`job_persp`) |
 | Behind the eye | A point nearer than the near plane is marked, not projected |
 | Arithmetic | One 16×16 multiplier and one serial divider, shared over the steps |
-| Time | About 60 clocks and 6 memory accesses a point |
+| Time | About 120 clocks and 6 memory accesses a point with perspective, 40 without |
 | Registers | None: the wrapper's |
 
 ## 2. Ports
@@ -39,14 +39,13 @@ Changed only while idle or in the clocks of `su_v` (8 clocks, at each job's star
 | `job_next` | in | 24 | The next descriptor's address; 0 for none |
 | `job_bad` | in | 1 | The wrapper rejects the job |
 
-All addresses are even byte addresses; words are 16 bits in the machine's byte order (`LE`).
+All addresses are even byte addresses. Words are the memory port's 16-bit words, which are numbers in the machine's own byte order, so the core needs no byte-order parameter.
 
 ## 3. Parameters
 
 | Name | Default | Meaning |
 |------|---------|---------|
-| `AW` | 21 | Word address width, as the blitter's |
-| `LE` | 0 | 1: memory is little-endian |
+| `AW` | 21 | Word address width, up to 23, as the blitter's |
 
 ## 4. Behaviour
 
@@ -80,7 +79,7 @@ Screen y grows downwards if the matrix says so: the engine does not flip any axi
 | Descriptor load (`start_ld`, or a chain) | 16 word reads |
 | Set-up (`su_v`) | 8 |
 | The view block | 16 word reads |
-| Each point | 3 reads, about 9 clocks of multiplies, with `job_persp` 2 more multiplies and 2 divides of about 20 clocks each, then 3 writes |
+| Each point | 3 reads, the nine products at 3 clocks each, with `job_persp` 2 more products and 2 divides of 32 clocks each, then 3 writes |
 
 The job ends as a blitter job does: `done` if `job_irq`, then the next descriptor if `job_next` is not 0, else idle. A chain of jobs with different view blocks transforms several objects with no CPU in between.
 
@@ -162,4 +161,7 @@ After the descriptor load and set-up (the blitter's 4.10), the 16 words of the v
 | G1 | Choices made in this draft, for review: the view block in memory rather than on ports; three words out a point (screen x, screen y, view z); 0x8000 marks a point behind the near plane; the divide rounds down; no axis is flipped; one view block a job |
 | G2 | 16-bit fixed point was chosen for size. A world larger than ±32767 units, or a need for sub-pixel screen positions, would be a later revision |
 | G4 | Both machines reviewed revision 1 at 6793fd9. retro-z80's two changes are in: projected values saturate to ±32767 so 0x8000 only ever means behind, and the divide rounds down, matching its own register-driven geometry unit so both give the same screen points |
+| G7 | Both machines' Vivado builds of the first RTL (831ef71) used two DSP blocks and the KS2's part missed 100 MHz by 0.2 ns, on the divide's end: rounding, sign, the centre add and the limit in one clock. The quotient is now registered first, and every product goes through the accumulator so the multiply is built once |
+| G6 | Size, Yosys for 7-series: 758 LUTs, 427 flip-flops and one DSP block |
+| G5 | The RTL is simple rather than fast (Jon: simple first): one product every three clocks and a 32-step serial divide. A pipelined multiplier and a shared radix-4 divide would roughly halve a point's time if it matters |
 | G3 | Not in this revision: clipping lines and triangles at the near plane (the CPU does it, from view z), back-face tests, lighting, and driving the rasteriser directly |
