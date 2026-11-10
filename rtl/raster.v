@@ -217,6 +217,7 @@ module raster #(
             da <= {(AW+1){1'b0}};
             mem_req <= 1'b0;  mem_we <= 1'b0;  mem_be <= 2'b11;
             su_i <= 3'd0;  dl_i <= 3'd0;  w_up <= 1'b0;  dlc <= 4'd0;  dl_got <= 2'd0;
+            creg <= 16'd0;      // (so a first job that never reads C writes no unknowns in simulation)
         end else begin
             if (stop && busy) stop_p <= 1'b1;
             case (st)

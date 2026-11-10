@@ -17,6 +17,8 @@ A core is the engine of a unit: the part that is the same whatever CPU drives it
 | `test/` | A unit test per core, one folder each |
 | `docs/` | A spec and a guide per core ([index](docs/README.md)) |
 
+A core's module is named after its file (`rtl/geom.v` is module `geom`). A machine that lists `rtl/*.v` in its build and has a module of its own with the same name must leave that file out: retro-z80 does so for `geom.v`, which it does not build.
+
 ## Rules for a core
 
 1. No register bus inside. Ports are plain strobes, valid flags and data; configuration comes in as plain input ports that the wrapper drives from its registers.
