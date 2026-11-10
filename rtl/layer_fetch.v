@@ -16,6 +16,8 @@
 //             entries read a group ahead
 //   DATWRITE  writes into the data registers, and a fetch enable per
 //             register (retro68k's BPLxDAT and BPLDMA)
+//   DATREAD   0: with DATWRITE, no read-back of the data registers
+//             (dat_rdata is 0)
 //   LITTLE    little-endian memory: a data word's bytes swap as it is stored
 //
 // Line by line: line_t (from the pixel clock) toggles at the start of each
@@ -46,6 +48,7 @@ module layer_fetch #(
     parameter PLANAR   = 1,
     parameter TILES    = 0,
     parameter DATWRITE = 0,
+    parameter DATREAD  = 1,
     parameter LITTLE   = 0,
     parameter URG_BASE = 15,                   // urgent mark: clocks ...
     parameter URG_WORD = 5,                    // ... plus this many a word still to come
@@ -201,7 +204,7 @@ module layer_fetch #(
     // Only the 8 x NL registers there are: the index is padded to a power of
     // two, and a register number past the last layer's must build nothing
     wire          ds_ok = ({{(29-LW){1'b0}}, dat_sel} < 8 * NL);
-    assign dat_rdata = ((DATWRITE != 0) && ds_ok) ? dr[dat_sel] : 16'd0;
+    assign dat_rdata = ((DATWRITE != 0) && (DATREAD != 0) && ds_ok) ? dr[dat_sel] : 16'd0;
 
     // ---------------------------------------------------------------- line state
     reg  [11:0]   left [0:NL-1];               // groups still to start
