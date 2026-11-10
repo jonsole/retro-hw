@@ -22,7 +22,7 @@ layer_pix #(.PLANAR(0), .TILES(0)) layer0 (
     .pos0(l0_fine_scroll), .transp(l0_transparent), .palofs(l0_palette),
     .tile(1'b0), .dat(l0_dat), .attr(10'd0), .gset(l0_gset),
     .fill_t(l0_fill_t), .take_t(l0_take_t),
-    .opaque(l0_opaque), .idx(l0_idx), .pri(), .raw(), .overrun_t(l0_overrun_t)
+    .opaque(l0_opaque), .idx(l0_idx), .pri(), .raw(), .raw_gs(), .overrun_t(l0_overrun_t)
 );
 ```
 
@@ -66,3 +66,4 @@ Only touch `dat` and `attr` while the unit is not full (`fill_t` = `take_t` as t
 - **The fast clock.** `clk_pix5` must be 5 times `clk_pix` with edges lined up. A slower synchroniser makes a new group visible later, which the fetch's deadline must allow for.
 - **Overrun is per group.** A late group blanks the layer from the group boundary to the next one; the unit does not take the group late. Count `overrun_t` toggles to see it happen.
 - **Unused features.** With `PLANAR` or `TILES` off, tie their inputs to 0 anyway (`gset` bit 0 included), so simulation shows no X.
+- **Direct colour.** `raw` is the pixel value before the palette; `raw_gs` is its group's {planar, depth}, so widen each pixel by `depth` + 1 bits rather than by the line's depth, and a mid-line depth change shows right in direct colour too.

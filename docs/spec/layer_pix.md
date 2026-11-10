@@ -1,6 +1,6 @@
 # Layer pixel unit (layer_pix)
 
-Status: **draft**, revision 4 for review: only the note on a mid-line scale change (4.3) changes, with `layer_fetch` revision 4 (the line-end reset). The unit itself is unchanged from revision 2 (locked 9 November 2026, PR #9): a group's depth, planar flag and scale travel with the group (`gset`) instead of being line settings.
+Status: **draft**, revision 5 for review: a new output, `raw_gs`, gives the planar flag and depth of the group each `raw` pixel came from, so a machine widening `raw` for direct colour follows a mid-line depth change (retro68k's request). Revision 4 (with `layer_fetch` revision 4): only the note on a mid-line scale change (4.3) changed. Revision 2 (locked 9 November 2026, PR #9): a group's depth, planar flag and scale travel with the group (`gset`) instead of being line settings.
 
 One layer's pixel side. It takes the layer's 16-pixel groups from its data registers (filled by the machine's layer fetch on the system clock), shows them pixel by pixel in the layer's window, with fine scroll and horizontal scaling, and gives a colour index per pixel to the priority stage. Groups cross from the system clock to the pixel clock under a full / taken handshake of toggles. A group that is not there in time makes the layer transparent for that group (overrun).
 
@@ -46,6 +46,7 @@ One layer's pixel side. It takes the layer's 16-pixel groups from its data regis
 | `idx` | out | 8 | Its colour index | With `opaque` |
 | `pri` | out | 1 | With `TILES`: a tile pixel whose column has PRI set; else 0 | With `opaque` |
 | `raw` | out | 8 | The pixel value itself, 0 outside the window (for direct colour) | With `opaque` |
+| `raw_gs` | out | 4 | The group `raw`'s pixel came from: bit 3 its `planar` flag, bits 2–0 its `depth` (`gset`), so its pixels have `depth` + 1 bits, planar or chunky. Only meaningful in the window | With `raw` |
 | `overrun_t` | out | 1 | Toggles each time a group was not there when needed | `clk_pix` |
 
 ## 3. Parameters
@@ -125,7 +126,7 @@ The unit has no registers: what the settings are called and where they live is t
 
 | Test | What it checks |
 |------|----------------|
-| `test/layer_pix` | Two units (the defaults; and `TILES` without `PLANAR`), a 200-pixel beam and a fetch stand-in that fills a group whenever one is taken. Every pixel of every line against a model: `opaque` in the window only, `idx` (and `pri`) of the right source pixel. Lines: chunky 1, 2, 4, 8 bits; planar 1, 3, 5, 8 planes; fine scroll 5, 9 and 15; scale 2, 4, 8; the palette offset; transparent colour 0 (chunky and planar); a later window; a window that ends one pixel into a group; a layer not active; tiles at 1, 2, 4, 8 bits with PAL and PRI per column; a planar unit ignoring `tile`; a fetch that stops after 2 or 3 groups (the rest transparent, `overrun_t` toggles); a full line after that; a scale, depth and planar change between two groups of one line, each group shown with its own settings; `transp` and `palofs` changed mid-line, applied from the next pixel |
+| `test/layer_pix` | Two units (the defaults; and `TILES` without `PLANAR`), a 200-pixel beam and a fetch stand-in that fills a group whenever one is taken. Every pixel of every line against a model: `opaque` in the window only, `idx` (and `pri`) of the right source pixel. Lines: chunky 1, 2, 4, 8 bits; planar 1, 3, 5, 8 planes; fine scroll 5, 9 and 15; scale 2, 4, 8; the palette offset; transparent colour 0 (chunky and planar); a later window; a window that ends one pixel into a group; a layer not active; tiles at 1, 2, 4, 8 bits with PAL and PRI per column; a planar unit ignoring `tile`; a fetch that stops after 2 or 3 groups (the rest transparent, `overrun_t` toggles); a full line after that; a scale, depth and planar change between two groups of one line, each group shown with its own settings; `transp` and `palofs` changed mid-line, applied from the next pixel; `raw` against the pixel value in the window (0 outside it) and `raw_gs` against the group the pixel came from, every pixel, the depth and planar splits included |
 | The machines' system tests | The machines' video tests (frames compared with a model) and the overrun reports |
 
 ## 7. Open points
@@ -135,3 +136,4 @@ The unit has no registers: what the settings are called and where they live is t
 | L1 | Closed: planar tiles (tile layers with planar patterns) are not planned. `TILES` assumes chunky patterns, and `layer_fetch` doesn't support `PLANAR` and `TILES` together. Neither machine needs both; a machine that does would start here and in `layer_fetch` 4.5 |
 | L2 | Closed: the palette offset is added to PAL in 4 bits and a sum past 15 wraps, by design (retro-z80 video spec: `((PALOFS + PAL) mod 16) × 16 + p`) |
 | L3 | `raw` is the value before the palette, for direct colour. retro68k uses it; retro-z80 will from its KS3 build (direct colour needs all three layers, and its KS2 build has one) |
+| L4 | Revision 5: `raw_gs` (retro68k's request) lets direct colour widen each pixel by its own group's depth after a mid-line depth change, where widening by the line's depth used the old depth until the next line. A machine that doesn't use `raw` leaves it unconnected; synthesis removes it |
