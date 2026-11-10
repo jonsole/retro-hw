@@ -90,27 +90,34 @@ module layer_pix #(
     reg  [3:0]  pos;                   // pixel in the group
     reg  [2:0]  hsub;                  // screen pixels shown of this source pixel
 
-    // The pixel at pos
-    wire [4:0]  bpp   = 5'd1 << lb;
+    // The pixel at pos. Planar: bit 15 - pos of each plane's word. Chunky at 1
+    // bit is the same with one plane. Deeper chunky: the pixel's word first
+    // (the highest register holds the leftmost pixels), then its place in it.
     wire [6:0]  bitp  = {3'd0, pos} << lb;                 // chunky: bit of the pixel in the group
     wire [2:0]  wi    = ((3'd1 << lb) - 1'b1) - bitp[6:4]; // ... and its data register
-    wire [15:0] cw    = sh[wi] << bitp[3:0];
+    wire [15:0] cwd   = sh[wi];
+    wire        one   = pl || (lb == 2'd0);                // a bit a word: planar, or 1-bit chunky
+    wire [2:0]  np    = pl ? planes : 3'd0;
     reg  [7:0]  value;
     always @(*) begin : px
         integer p;
-        if (pl) begin
+        value = 8'd0;
+        if (one) begin
             for (p = 0; p < 8; p = p + 1)
-                value[p] = (p <= planes) ? sh[p][4'd15 - pos] : 1'b0;
-        end else
-            value = cw[15:8] >> (5'd8 - bpp);
+                value[p] = (p <= np) ? sh[p][4'd15 - pos] : 1'b0;
+        end else case (lb)
+            2'd1:    value[1:0] = cwd[{~pos[2:0], 1'b0} +: 2];
+            2'd2:    value[3:0] = cwd[{~pos[1:0], 2'b00} +: 4];
+            default: value      = pos[0] ? cwd[7:0] : cwd[15:8];
+        endcase
     end
     wire        deep  = pl ? planes[2] : (lb == 2'd3);     // more than 4 bits: no palette offset
     wire [4:0]  ca    = pos[3] ? sha[9:5] : sha[4:0];      // the tile column's PRI and PAL
     wire [3:0]  blk   = tl ? palofs + ca[3:0] : palofs;
 
     // Moving on by one source pixel
-    wire [4:0]  np    = pos + 1'b1;
-    wire        last  = np[4];                             // the group is used up
+    wire [4:0]  nxp   = pos + 1'b1;
+    wire        last  = nxp[4];                            // the group is used up
     wire        step  = (hsub == (3'd7 >> (2'd3 - hs)));   // last screen pixel of this source pixel
     wire        first = active && (hn == xs);              // the window starts with the next pixel
 
@@ -160,7 +167,7 @@ module layer_pix #(
             end else if (in_win) begin
                 if (step) begin
                     hsub <= 3'd0;
-                    pos  <= np[3:0];
+                    pos  <= nxp[3:0];
                     if (last && hn < xe) load;
                 end else
                     hsub <= hsub + 1'b1;
