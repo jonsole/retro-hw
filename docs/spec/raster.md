@@ -89,7 +89,7 @@ So two triangles that share an edge fill every pixel along it exactly once, a tr
 | The first row's address (y × stride) | About 16 |
 | TRI: sort and three slopes | About 110 |
 | LINE: each pixel stepped | 1, plus its memory accesses if written |
-| TRI: each row | 1, plus one memory access a destination word of the span (two where C is read) |
+| TRI: each row | 4, plus one memory access a destination word of the span (two where C is read) |
 
 The job ends as a blitter job does: `done` if `job_irq`, then the next descriptor if `job_next` is not 0, else idle.
 
@@ -166,7 +166,7 @@ Row 9, the bottom point's, is not drawn: a triangle below sharing that point or 
 The descriptor load and set-up are the blitter's (4.10). Then:
 
 - **LINE.** About 16 clocks to find the first row's address, then one clock a pixel stepped. A pixel inside the window is one write (after one read, where 4.1 says); the stepping waits for it.
-- **TRI.** The sort and the three divides, one after another on the one divider, about 110 clocks. Then each row: one clock to step both edges, and the span's words, one write each (after one read where needed). A row outside the window, or with an empty span, costs its one clock.
+- **TRI.** The sort and the three divides, one after another on the one divider, about 110 clocks. Then each row: four clocks (the edges' ceilings, the span cut to the window, the draw decision, the step), and the span's words, one write each (after one read where needed). A row outside the window, or with an empty span, costs its four clocks.
 - `stop` is taken between pixels (LINE) or rows (TRI).
 
 ### 4.8 Errors and reset
@@ -198,5 +198,6 @@ The descriptor load and set-up are the blitter's (4.10). Then:
 | R2 | Jon chose triangle points over ready-made slopes, so the core has a divider. A serial one is small but each triangle pays about 110 clocks before its first pixel |
 | R3 | The first design's EDGES job (one pixel a row, for a later fill) is gone: TRI fills directly. retro-z80's fast3d demo moves from edges plus a fill to TRI jobs |
 | R5 | Both machines reviewed revision 1 at 6793fd9 and agree; the clip window is now stated as the wrapper's shared registers, and the guide note on long lines is in section 5. retro-z80 may build `TRI` 0 on the KS2 at first, for room |
+| R7 | Both machines' Vivado builds of the first RTL (bff2ac6) passed for lines only but failed 100 MHz with triangles: the row step did the edge compare, ceiling, clamps, count and decision in one clock (26 to 28 logic levels). It is now three clocks, with the span's ends registered |
 | R6 | Size, Yosys for 7-series: 892 LUTs and 383 flip-flops with lines only, 1,825 and 781 with triangles. Not yet trimmed (Jon: simple first); the triangle half has 34-bit edge arithmetic that could narrow |
 | R4 | Filled shapes other than triangles (trapezoids, convex polygons in one job), shading and depth are not in this revision |

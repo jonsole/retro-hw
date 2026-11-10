@@ -89,7 +89,7 @@ module raster #(
                      S_SRT  = 5'd8,  S_DV0 = 5'd9,  S_DV  = 5'd10, S_DVE = 5'd11,
                      S_TR   = 5'd12, S_TN  = 5'd13,
                      S_SP   = 5'd14, S_SPC = 5'd15, S_SPR = 5'd16, S_SPK = 5'd17, S_SPW = 5'd18,
-                     S_END  = 5'd19;
+                     S_END  = 5'd19, S_TR2 = 5'd20, S_TR3 = 5'd21;
     reg  [4:0]    st, sp_ret;
     reg  [AW:0]   da;
     assign da_q = {{(23-AW){1'b0}}, da};
@@ -179,15 +179,15 @@ module raster #(
     wire [18:0]   dv_t  = {dv_r, dv_q[32]} - {2'b00, dv_d};
     wire [33:0]   dv_mag = {1'b0, dv_q} + {33'd0, (dv_r != 18'd0)};      // rounded up, for a negative slope
     wire signed [33:0] dv_res = dv_neg ? -$signed(dv_mag) : $signed({1'b0, dv_q});
-    wire signed [33:0] x_lo  = (xl < xs) ? xl : xs;
-    wire signed [33:0] x_hi  = (xl < xs) ? xs : xl;
-    wire signed [33:0] c_lo  = x_lo + 34'sh0_0000_FFFF;
-    wire signed [33:0] c_hi  = x_hi + 34'sh0_0000_FFFF;
-    wire signed [17:0] t_l   = c_lo[33:16];                               // ceil: the span's first pixel
-    wire signed [17:0] t_r   = c_hi[33:16];                               // ... and one past its last
+    // A row's span, over three clocks (one was too long a path at 100 MHz):
+    // each edge's ceiling; the smaller and larger, cut to the window; the count
+    wire signed [33:0] c_l   = xl + 34'sh0_0000_FFFF;
+    wire signed [33:0] c_s   = xs + 34'sh0_0000_FFFF;
+    reg  signed [17:0] r_cl, r_cs;                                       // ceil(xl), ceil(xs)
+    wire signed [17:0] t_l   = (r_cl < r_cs) ? r_cl : r_cs;               // the span's first pixel
+    wire signed [17:0] t_r   = (r_cl < r_cs) ? r_cs : r_cl;               // ... and one past its last
     wire signed [17:0] xend  = xmax18 + 18'sd1;
-    wire signed [17:0] t_lc  = (t_l < xmin18) ? xmin18 : t_l;
-    wire signed [17:0] t_rc  = (t_r > xend) ? xend : t_r;
+    reg  signed [17:0] t_lc, t_rc;                                       // ... cut to the window
     wire signed [17:0] t_n   = t_rc - t_lc;
     wire          t_draw = y_in && (t_n > 18'sd0);
 
@@ -355,9 +355,18 @@ module raster #(
             end
             // ... and its rows
             S_TR: if (TRI != 0) begin
+                r_cl <= c_l[33:16];  r_cs <= c_s[33:16];
                 if (stop_p) finish(1'b0);
                 else if (cy == cyy) st <= S_END;
-                else if (t_draw) span(t_lc[16:0], t_n[16:0], 1'b1, S_TN);
+                else st <= S_TR2;
+            end
+            S_TR2: if (TRI != 0) begin
+                t_lc <= (t_l < xmin18) ? xmin18 : t_l;
+                t_rc <= (t_r > xend) ? xend : t_r;
+                st   <= S_TR3;
+            end
+            S_TR3: if (TRI != 0) begin
+                if (t_draw) span(t_lc[16:0], t_n[16:0], 1'b1, S_TN);
                 else st <= S_TN;
             end
             S_TN: if (TRI != 0) begin
