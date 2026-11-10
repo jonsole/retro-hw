@@ -96,7 +96,7 @@ So the machine chooses the order of its requesters by the numbers it gives them.
 | 2 | Audio | no | no | no |
 | 3 | Copper | no | no | the copper's priority bit |
 | 4 | CPU | yes | no | no |
-| 5 | DMA engine | yes | no | the job's priority bit |
+| 5 | Blitter | yes | no | the job's priority bit |
 | 6 | Test port | yes | no | no |
 
 ### 4.2 The slot plan
@@ -107,7 +107,7 @@ Slot n has an owner mask (bits n×N to n×N+N−1 of `slot_owner`) and a lock bi
 |------|--------|--------|--------|--------|--------|--------|-----|
 | A CPU that can wait | CPU | layers, sprites | audio | layers, sprites | – | – | The 68000 machine. An urgent fetch may take the CPU's slot |
 | A CPU that cannot wait | CPU | layers, sprites | CPU | layers, sprites | audio | 0, 2 | The Z80 machine. The CPU's slots are its own |
-| A big blit | DMA engine | layers, sprites | audio | layers, sprites | – | – | The CPU gets spare cycles only |
+| A big blit | Blitter | layers, sprites | audio | layers, sprites | – | – | The CPU gets spare cycles only |
 | The copper first | copper | layers, sprites | audio | layers, sprites | – | – | A copper list that must not wait for the CPU |
 | Everything free | – | – | – | – | – | – | Every cycle by rule 4 |
 
@@ -199,11 +199,11 @@ With 20 ns cycles, one owned slot in a plan of S slots is 50/S M words a second:
 
 On top of that it gets the spare cycles its place in rule 4 wins. For the plans of 4.2:
 
-| Plan | CPU | Layers and sprites together | Audio | Copper, DMA engine, test port |
+| Plan | CPU | Layers and sprites together | Audio | Copper, blitter, test port |
 |------|-----|-----------------------------|-------|-------------------------------|
 | A CPU that can wait | 10 M/s, less urgent fetches | 20 M/s | 10 M/s, less urgent fetches | Spare cycles only |
 | A CPU that cannot wait | 20 M/s, never taken | 20 M/s | 10 M/s, less urgent fetches | Spare cycles only |
-| A big blit | Spare cycles only | 20 M/s | 10 M/s, less urgent fetches | DMA engine 10 M/s, less urgent fetches |
+| A big blit | Spare cycles only | 20 M/s | 10 M/s, less urgent fetches | Blitter 10 M/s, less urgent fetches |
 
 **Urgent wait.** An urgent request loses a cycle only to an owner of a locked slot that asks, or to an urgent request from a lower number. Let U be the number of urgent requests from lower numbers that can be served ahead of it. Let W be the longest run of slots in a row (counting round the end of the plan) that holds at most U unlocked slots, in any plan the machine may use: the request can lose every slot in such a run, the locked ones to their owners and the unlocked ones to the lower numbers. From the start of the clock in which the urgent request is first high to the edge at which the requester takes its data:
 
@@ -244,19 +244,19 @@ Inputs tied to constants fold away: a read-only requester's `we`, `wdata` and `b
 | Build | LUTs | Flip-flops |
 |-------|------|------------|
 | The Z80 plan as constants, no high bits | 170, and 3 SRL16 | 7 |
-| A programmable plan (ports, a register outside), high bits on the copper and DMA engine | 208, and 3 SRL16 | 7 |
+| A programmable plan (ports, a register outside), high bits on the copper and blitter | 208, and 3 SRL16 | 7 |
 
 Most of it is the 21-bit address and 16-bit data mux. The plan register itself (S×N + S bits, 40 for N = 7, S = 5) is in the machine.
 
 ### 4.9 Design notes
 
 - **Generic requesters.** The scheduler has no idea what its requesters are. Everything that made a requester special is now an input the machine drives: its number (priority), its owned slots, and its urgent and high flags.
-- **Owners and priority.** A pure priority order lets the requesters at the top starve those at the bottom, and makes CPU timing depend on what the display and DMA engine are doing. Owned slots give each requester a floor that is easy to work out (4.6). Spare cycles go by priority, so nothing is wasted.
+- **Owners and priority.** A pure priority order lets the requesters at the top starve those at the bottom, and makes CPU timing depend on what the display and blitter are doing. Owned slots give each requester a floor that is easy to work out (4.6). Spare cycles go by priority, so nothing is wasted.
 - **Several owners in a slot.** One mask per slot lets requesters share a slot (layers and sprites, for example), with the lower number first.
 - **Locks.** A requester that cannot be held off must have its slots even when another is urgent. Without a lock, urgent requests may take any slot, which keeps their wait at its least.
 - **No tag.** The memory controller's read latency is fixed, so the scheduler, which knows who got each cycle, also knows whose read data comes back. The controller passes no tag, and nothing limits the number of requesters.
 - **No deadlines.** The first version compared the layers' and sprites' deadlines to pick between them. The generic version picks by number instead, which needs no comparators. Each requester still uses its own deadline to decide when to raise `urgent`.
-- **What changed from the first version.** That version had fixed channels (CPU, layers, sprites, audio, copper, DMA engine, test port), fixed cycle masks as parameters, a `CPU_FIRST` mode, a "nasty" copper level and a HIGH mode in which a DMA engine job took the CPU's cycle but left it 1 in 2, 4 or 8 of them. The plan register replaces the modes: a machine makes the copper or the DMA engine owner of the CPU's slot while the job runs. Both machines agreed to drop the share.
+- **What changed from the first version.** That version had fixed channels (CPU, layers, sprites, audio, copper, blitter, test port), fixed cycle masks as parameters, a `CPU_FIRST` mode, a "nasty" copper level and a HIGH mode in which a blitter job took the CPU's cycle but left it 1 in 2, 4 or 8 of them. The plan register replaces the modes: a machine makes the copper or the blitter owner of the CPU's slot while the job runs. Both machines agreed to drop the share.
 
 ## 5. How a machine uses it
 
@@ -284,6 +284,6 @@ The wrapper (or the machine's top level) must:
 |---|-------|
 | D1 | A memory whose read latency varies from one access to the next (SDRAM, say) would need a tag again, or a FIFO of winners. Both memories in use today have a fixed latency. A latency fixed for each slot needs no tag (D5) |
 | D2 | `sprite_fetch.v` still gives a deadline (`mem_deadline`). The scheduler no longer uses it; the sprite fetch's urgent flag is what counts |
-| D3 | Rule 4 puts all high requests ahead of all others. In the first version a high DMA engine went ahead of the CPU but behind the display and audio. With the numbers of 4.1 a high DMA engine now also goes ahead of the display in spare cycles; the display keeps its owned slots and its urgent requests |
+| D3 | Rule 4 puts all high requests ahead of all others. In the first version a high blitter went ahead of the CPU but behind the display and audio. With the numbers of 4.1 a high blitter now also goes ahead of the display in spare cycles; the display keeps its owned slots and its urgent requests |
 | D4 | The size figures are from Yosys; the machines' Vivado builds are the ones that count |
-| D5 | **Parked: a 12.5 ns memory cycle** (retro-z80 issue #91, branch `fastmem-experiment`; waits for the KS3 board and a faster DMA engine). Its controller (`sram_ctl8`) stays on 100 MHz and serialises the pins: 8 cycles in each 100 ns slot (S = 8), given out at slot edges 0, 1, 2, 4, 5, 6, 7 and 9. This scheduler needs two changes for it, planned together as revision 1.1. Both are compatible: no new ports, and today's builds behave the same. **(1) Cycles on back-to-back clocks.** A requester's `req` is still its old one in the clock of its ack, so with `start_next` high on two clocks in a row it would win a second cycle. Fix: decide on `req & ~ack`. With a cycle every other clock, as now, the ack clock is never a decision clock. **(2) A read delay that depends on the slot.** `sram_ctl8` takes 4 clocks in slots 0, 1, 3, 4, 5 and 7 and 5 clocks in slots 2 and 6. Padding every read to 5 does not work: the Z80 at 20 MHz has its byte one clock before it takes it (retro-z80 spec 1, section 5.3), so one more clock is a wait it cannot make. Fix: an optional parameter, a table of one read delay for each slot, looked up by the slot of the issue, with `RD_DELAY` for slots past the table. Each tracked entry also keeps a read bit, so that an idle cycle or a write is never taken as due. `sram_ctl8` never returns two results in one clock, so exactly one entry is due whenever `rvalid` comes. Tests to add: back-to-back `start_next`, and the 4, 4, 5, 4, 4, 4, 5, 4 delays with the real `sram_ctl8` |
+| D5 | **Parked: a 12.5 ns memory cycle** (retro-z80 issue #91, branch `fastmem-experiment`; waits for the KS3 board and a faster blitter). Its controller (`sram_ctl8`) stays on 100 MHz and serialises the pins: 8 cycles in each 100 ns slot (S = 8), given out at slot edges 0, 1, 2, 4, 5, 6, 7 and 9. This scheduler needs two changes for it, planned together as revision 1.1. Both are compatible: no new ports, and today's builds behave the same. **(1) Cycles on back-to-back clocks.** A requester's `req` is still its old one in the clock of its ack, so with `start_next` high on two clocks in a row it would win a second cycle. Fix: decide on `req & ~ack`. With a cycle every other clock, as now, the ack clock is never a decision clock. **(2) A read delay that depends on the slot.** `sram_ctl8` takes 4 clocks in slots 0, 1, 3, 4, 5 and 7 and 5 clocks in slots 2 and 6. Padding every read to 5 does not work: the Z80 at 20 MHz has its byte one clock before it takes it (retro-z80 spec 1, section 5.3), so one more clock is a wait it cannot make. Fix: an optional parameter, a table of one read delay for each slot, looked up by the slot of the issue, with `RD_DELAY` for slots past the table. Each tracked entry also keeps a read bit, so that an idle cycle or a write is never taken as due. `sram_ctl8` never returns two results in one clock, so exactly one entry is due whenever `rvalid` comes. Tests to add: back-to-back `start_next`, and the 4, 4, 5, 4, 4, 4, 5, 4 delays with the real `sram_ctl8` |

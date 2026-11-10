@@ -24,7 +24,7 @@ Each machine documents its own instantiation: the registers that drive a core, t
 | Layer pixel unit | `rtl/layer_pix.v` | [spec/layer_pix.md](spec/layer_pix.md) | [guide/layer_pix.md](guide/layer_pix.md) |
 | Layer fetch | `rtl/layer_fetch.v` | [spec/layer_fetch.md](spec/layer_fetch.md) | [guide/layer_fetch.md](guide/layer_fetch.md) |
 | Copper engine | `rtl/copper_engine.v` | [spec/copper_engine.md](spec/copper_engine.md) | [guide/copper_engine.md](guide/copper_engine.md) |
-| DMA engine (blitter) | `rtl/dmx_core.v` | [spec/dmx_core.md](spec/dmx_core.md) | [guide/dmx_core.md](guide/dmx_core.md) |
+| Blitter | `rtl/blitter.v` | [spec/blitter.md](spec/blitter.md) | [guide/blitter.md](guide/blitter.md) |
 | Platform parts: HDMI output, DDR output register | `platform/artix7/hdmi_out.v`, `oddr.v`, `lint_stub.v`; `platform/sim/oddr.v` | [spec/platform.md](spec/platform.md) | [guide/platform.md](guide/platform.md) |
 
 ## Decisions

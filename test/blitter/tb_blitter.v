@@ -1,4 +1,4 @@
-// Unit test for dmx_core: directed jobs against a memory model.
+// Unit test for the blitter: directed jobs against a memory model.
 // The testbench is the wrapper: it keeps each channel's job in plain
 // arrays and puts the running channel's on the job ports while the core
 // sets it up. Memory answers after a random wait, reads come back in order
@@ -13,7 +13,7 @@
 `ifndef LINES
 `define LINES 1
 `endif
-module tb_dmx_core;
+module tb_blitter;
     localparam LE = `LE;
     localparam LINES = `LINES;
     reg clk = 0, rst = 1;
@@ -107,7 +107,7 @@ module tb_dmx_core;
         if (p_txpush) begin txq[tx_n] = p_txd; tx_n = tx_n + 1; end
     end
 
-    dmx_core #(.CHIP_WORDS(24'd8192), .LE(LE), .MASKIMG(1), .XPORT(1), .PORTJOB(1),
+    blitter #(.CHIP_WORDS(24'd8192), .LE(LE), .MASKIMG(1), .XPORT(1), .PORTJOB(1),
                .LINE(LINES), .EDGES(LINES)) dut (
         .clk(clk), .rst(rst),
         .enable(1'b1), .pause(pause), .start_ld(start_ld), .start_run(start_run), .stop(stop),

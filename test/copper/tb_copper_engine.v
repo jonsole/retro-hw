@@ -211,15 +211,15 @@ module tb_copper_engine;
         // in the next
         check("write after the WAIT", runclk[1] - runclk[0] > 0, 1);
 
-        // 3. WAIT with the DMA engine busy; WAIT that never ends (line 25)
-        $display("3. WAIT for the DMA engine, WAIT never");
+        // 3. WAIT with the blitter busy; WAIT that never ends (line 25)
+        $display("3. WAIT for the blitter, WAIT never");
         clear;
         put(0, {OP_WAIT, 4'b1001, 8'd0}); put(1, 16'd0);      // (0, 0) and blt idle
         put(2, {OP_WAIT, 4'b1000, 8'd25}); put(3, 16'd0);     // line 25 >= VTOT
         blt_idle = 1'b0;
         pulse_start1;
         clk_n(50);
-        check("held by the DMA engine", nrun, 1);
+        check("held by the blitter", nrun, 1);
         check("waiting", waiting, 1);
         blt_idle = 1'b1;
         clk_n(400);

@@ -1,8 +1,8 @@
-# dmx_core: the DMA engine and blitter
+# Blitter (blitter)
 
 Status: **draft**
 
-`rtl/dmx_core.v` is the engine of the DMA engine: four channels, their scheduler, and one Amiga-style blitter datapath they share. It reads and writes memory a word at a time. A machine's wrapper keeps the registers: the job registers and their layout, the descriptor format, the control and status registers and the interrupt flags. The wrapper turns register writes into the core's channel strobes and decodes the running channel's job onto the core's job ports.
+`rtl/blitter.v` is the blitter: four DMA channels, their scheduler, and one Amiga-style blitter datapath they share. (It was `dmx_core` until November 2026.) It reads and writes memory a word at a time. A machine's wrapper keeps the registers: the job registers and their layout, the descriptor format, the control and status registers and the interrupt flags. The wrapper turns register writes into the core's channel strobes and decodes the running channel's job onto the core's job ports.
 
 ## 1. Summary
 
@@ -252,7 +252,7 @@ Field layouts, register addresses and the descriptor format are the machine's.
 
 ## 6. Test plan
 
-`test/dmx` (`make -C test dmx`) runs one testbench three times: with `LE` 0 and 1, the core built with every option (`LINE` and `EDGES` 1); and with `LINE` and `EDGES` 0, where the LINE and EDGES jobs are replaced by checks that OP 2 and OP 3 are errors and write nothing. The testbench acts as the wrapper, keeping each channel's job in arrays. Memory answers after random waits; reads come back in order 2-5 clocks later. Each result is checked byte by byte against a model of the pixels.
+`test/blitter` (`make -C test blitter`) runs one testbench three times: with `LE` 0 and 1, the core built with every option (`LINE` and `EDGES` 1); and with `LINE` and `EDGES` 0, where the LINE and EDGES jobs are replaced by checks that OP 2 and OP 3 are errors and write nothing. The testbench acts as the wrapper, keeping each channel's job in arrays. Memory answers after random waits; reads come back in order 2-5 clocks later. Each result is checked byte by byte against a model of the pixels.
 
 | Test | Checks |
 |------|--------|
