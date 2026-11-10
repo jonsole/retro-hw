@@ -1,93 +1,85 @@
 # Blitter (blitter)
 
-Status: **draft**
+Status: **draft**, revision 2: a redesign, reviewed by both machines and built in Vivado by both (PR #14). The first design (four channels on one datapath, ADD, LINE, EDGES, port jobs, a second port; `dmx_core`, then `blitter` revision 1, in the repository's history before PR #14) tried to do too much. It became three cores: this one for rectangles of pixels, [raster](raster.md) for lines and triangles, and [geom](geom.md) for 3D points. `rtl/blitter.v` implements this revision. To be locked once both machines have ported to it.
 
-`rtl/blitter.v` is the blitter: four DMA channels, their scheduler, and one Amiga-style blitter datapath they share. (It was `dmx_core` until November 2026.) It reads and writes memory a word at a time. A machine's wrapper keeps the registers: the job registers and their layout, the descriptor format, the control and status registers and the interrupt flags. The wrapper turns register writes into the core's channel strobes and decodes the running channel's job onto the core's job ports.
+The blitter works on rectangles of pixels in memory: it copies, fills, combines and cuts out, one job at a time. Each destination pixel D is a logic function (the minterm) of three inputs: A, a 1-bit mask; B, the source; and C, the destination's old contents. It is the Amiga's blitter in outline. A job can name a next job, so a list of jobs runs with no CPU in between.
+
+The core has no registers a CPU can reach. The machine's wrapper keeps the job registers and their layout, and drives the job as ports; the core reads job descriptors from memory and hands them to the wrapper to store.
 
 ## 1. Summary
 
 | Item | Value |
 |------|-------|
-| Channels | 4, round robin; one at a time on the datapath |
-| Turn | A group of up to 16 destination words, 16 pixels of a line, or 8 bytes of a port job |
-| A channel alone | Goes straight on to its next group or row: no save, pick or restore |
-| Operations | BLIT (any of the 256 minterms of A, B and C), ADD (per pixel, wrapping or saturating, signed or not); optionally LINE (`LINE`) and EDGES (`EDGES`) |
-| Pixel depths | 1, 2, 4 and 8 bits |
-| A (the mask) | None (all ones), a 1 bpp image, or B against a key colour |
-| B (the source) | Memory, with any bit offset, or a constant |
-| Direction | Forwards or backwards (for overlapping copies) |
-| Port job | Optional (`PORTJOB`): a FIFO to memory or memory to a FIFO, a byte at a time |
-| Memory | One word port; an optional second port for addresses past `CHIP_WORDS` (`XPORT`) |
+| Jobs | One at a time. A job may chain to a next descriptor |
+| Operation | D = minterm(A, B, C), any of the 256, per bit |
+| Pixel depths | 1, 2, 4 and 8 bits, source and destination alike |
+| Positions | Any pixel position for source, mask and destination |
+| A (the mask) | None (all ones), a 1-bit image (`MASKIMG`), or B compared with a key colour |
+| B (the source) | Memory, or a constant word |
+| Direction | Left to right, or right to left (`job_rtl`) for overlapping copies; rows in either order, by the sign of the strides |
+| Clipping | None: software trims the rectangle |
+| Memory | One word port, on the scheduler (`dmac.v`) |
 | Byte order | Big- or little-endian memory (`LE`) |
-| Clock | One clock domain |
 | Registers | None: the wrapper's |
+
+Gone from the first design: ADD, the four channels and their turns, pause, timer and copper starts, job priority, the second port, port (FIFO) jobs, LINE and EDGES (now `raster`), and the address range check.
 
 ## 2. Ports
 
 All inputs are sampled on the rising edge of `clk`. "Strobe" means high for one clock.
 
-### 2.1 Clock and channels
+### 2.1 Clock and control
+
+`raster` and `geom` use the same control ports with the same meaning.
 
 | Name | Dir | Width | Meaning | Timing |
 |------|-----|-------|---------|--------|
 | `clk` | in | 1 | The clock | |
-| `rst` | in | 1 | Reset: channels idle, no request | Synchronous |
-| `enable` | in | 1 | The engine may run; 0 holds every channel | Level |
-| `pause` | in | 4 | Channel n waits (its job stays) | Level |
-| `start_ld` | in | 4 | Start channel n, loading the descriptor at its descriptor address | Strobe; ignored while busy |
-| `start_run` | in | 4 | Start channel n with the job the wrapper already holds | Strobe; ignored while busy; `start_ld` wins |
-| `stop` | in | 4 | Stop channel n at the end of its turn | Strobe; ignored while idle |
-| `clr_done` | in | 4 | Clear `done[n]` | Strobe |
-| `clr_err` | in | 4 | Clear `err[n]` | Strobe |
-| `da_we` | in | 4 | Channel n's descriptor address becomes `da_d` | Strobe; ignored while busy |
-| `da_d` | in | 24 | The new descriptor address (bytes) | With `da_we` |
-| `busy` | out | 4 | Channel n has a job | Register |
-| `done` | out | 4 | Channel n finished or stopped | Register |
-| `err` | out | 4 | Channel n stopped on an error | Register |
-| `da_q` | out | 96 | Descriptor addresses, channel n in bits 24n+23 to 24n | Register |
-| `ea_q` | out | 96 | Error addresses, the same way | Register |
-| `irq_set` | out | 4 | Channel n's interrupt is due | Strobe |
-| `idle` | out | 1 | No channel busy | From `busy` |
-| `cur` | out | 2 | The channel being worked on | Register |
+| `rst` | in | 1 | Reset: idle, no request | Synchronous |
+| `enable` | in | 1 | The core may run; 0 holds it between memory accesses (its job stays) | Level |
+| `start_ld` | in | 1 | Start: load the descriptor at the descriptor address, then run it | Strobe; ignored while busy |
+| `start_run` | in | 1 | Start with the job the wrapper already holds | Strobe; ignored while busy; `start_ld` wins |
+| `stop` | in | 1 | Stop after the destination word in hand | Strobe; ignored while idle |
+| `da_we` | in | 1 | The descriptor address becomes `da_d` | Strobe; ignored while busy |
+| `da_d` | in | 24 | The new descriptor address (bytes; bit 0 ignored) | With `da_we` |
+| `da_q` | out | 24 | The descriptor address: the job running or last run, when it came from a descriptor | Register |
+| `busy` | out | 1 | A job or a chain is running | Register |
+| `done` | out | 1 | A job with `job_irq` set has ended, or the core has stopped (the chain's end, `stop`, an error) | Strobe |
+| `err` | out | 1 | The last job stopped on an error (4.6). Cleared by the next start | Register |
 
 ### 2.2 The job
 
-The wrapper decodes the running channel's job onto these ports. It changes them only in the clocks of `su_v`, and holds them after.
+The wrapper decodes its job registers onto these ports. It changes them only while the core is idle or in the clocks of `su_v`, and holds them otherwise.
 
 | Name | Dir | Width | Meaning |
 |------|-----|-------|---------|
-| `su_v` | out | 1 | The core is setting up channel `cur`'s job: 8 clocks running |
-| `su_i` | out | 3 | Which of the 8 clocks, 0 to 7 (for a wrapper that reads its job a long word a clock) |
-| `job_op` | in | 3 | 0 BLIT, 1 ADD, 2 LINE (with `LINE`), 3 EDGES (with `EDGES`); anything else is an error |
-| `job_minterm` | in | 8 | Bit a×4 + b×2 + c is D for those bits of A, B and C |
-| `job_sat` | in | 1 | ADD: saturate |
-| `job_signed` | in | 1 | ADD: pixels are signed |
-| `job_mask` | in | 2 | 0 none, 1 a 1 bpp image at `job_aaddr`, 2 B against the key colour (`job_value` bits 7-0), 3 an error |
-| `job_bpp` | in | 2 | Log2 of bits per pixel |
-| `job_desc` | in | 1 | Backwards: rows from the last, words from the end |
-| `job_irq` | in | 1 | Interrupt at the end of the job |
+| `su_v` | out | 1 | The core is about to use the job: 8 clocks running, at the start of each job |
+| `su_i` | out | 3 | Which of the 8 clocks, 0 to 7 (for a wrapper that reads its job from a RAM, a long word a clock) |
+| `job_minterm` | in | 8 | Bit a×4 + b×2 + c is D for those values of A, B and C |
+| `job_mask` | in | 2 | A: 0 none (all ones), 1 the 1-bit image at `job_aaddr` (with `MASKIMG`), 2 B against `job_key` (A is 1 where B differs from the key), 3 an error |
+| `job_bpp` | in | 2 | Log2 of the bits per pixel: 0 to 3 |
+| `job_rtl` | in | 1 | Work each row right to left (4.4) |
 | `job_bconst` | in | 1 | B is `job_value`, not memory |
-| `job_ymaj`, `job_xneg`, `job_yneg` | in | 1 each | LINE: the octant |
-| `job_value` | in | 32 | The constant B, the key colour; LINE's pattern and colour |
-| `job_bstride` | in | 16 | Signed bytes from row to row, for A and B |
-| `job_dstride` | in | 16 | Signed bytes from row to row, for D |
-| `job_width` | in | 24 | Pixels per row; LINE: its length; EDGES: the number of edges |
-| `job_height` | in | 16 | Rows; LINE: the shorter length |
-| `job_aaddr` | in | 24 | A's first byte; LINE: x of the first pixel; EDGES: the points |
-| `job_baddr` | in | 24 | B's first byte; LINE: y of the first pixel; EDGES: the edges |
-| `job_daddr` | in | 24 | D's first byte |
-| `job_abit`, `job_bbit`, `job_dbit` | in | 3 each | The first pixel's place in its byte (A in bits, B and D in pixels) |
+| `job_irq` | in | 1 | Strobe `done` when this job ends |
+| `job_value` | in | 16 | The constant B: one destination word of pixels, the leftmost in the top bits |
+| `job_key` | in | 8 | The key colour, in its low `bpp` bits |
+| `job_astride` | in | 16 | Signed bytes from one row's start to the next, for A (a 1-bit mask's rows are shorter than an 8-bit source's) |
+| `job_bstride` | in | 16 | The same for B |
+| `job_dstride` | in | 16 | The same for D |
+| `job_width` | in | 16 | Pixels per row; 0 is an empty job |
+| `job_height` | in | 16 | Rows; 0 is an empty job |
+| `job_aaddr`, `job_baddr`, `job_daddr` | in | 24 each | The byte holding the first row's first pixel (with `job_rtl`, its last pixel: the first one worked on) |
+| `job_abit` | in | 3 | That pixel's place in its byte for A, in bits from the left |
+| `job_bbit`, `job_dbit` | in | 3 each | The same for B and D, in pixels from the left (0 to 8/bits per pixel − 1) |
 | `job_next` | in | 24 | The next descriptor's address; 0 for none |
-| `job_bport` | in | 1 | Port job: B from the FIFO (`job_baddr` is not used) |
-| `job_dport` | in | 1 | Port job: D to the FIFO (`job_daddr` is not used) |
-| `job_bad` | in | 1 | The wrapper rejects the job (a reserved field, say) |
-| `clip_xmin` … `clip_ymax` | in | 16 each | LINE's and EDGES' clip rectangle, signed, inclusive |
+| `job_bad` | in | 1 | The wrapper rejects the job (a reserved field set, say) |
 
 ### 2.3 Descriptor load
 
+A descriptor is 8 long words (32 bytes) of memory at an even address, in the wrapper's own format. The core reads them and hands each to the wrapper, which stores it as the job. `raster` and `geom` load their descriptors the same way.
+
 | Name | Dir | Width | Meaning | Timing |
 |------|-----|-------|---------|--------|
-| `dl_xok` | in | 1 | The descriptor at `cur`'s address may be read through the other port | Level, looked at as the load starts |
 | `dl_v` | out | 1 | A long word of the descriptor is here | Strobe |
 | `dl_i` | out | 3 | Which long word, 0 to 7 | With `dl_v` |
 | `dl_w0` | out | 16 | Its first word (the lower address), as stored | With `dl_v` |
@@ -96,188 +88,186 @@ The wrapper decodes the running channel's job onto these ports. It changes them 
 
 ### 2.4 Memory port
 
+One requester on the scheduler. `raster` and `geom` have the same port.
+
 | Name | Dir | Width | Meaning | Timing |
 |------|-----|-------|---------|--------|
 | `mem_req` | out | 1 | An access is asked for | Held until `mem_ack` |
 | `mem_we` | out | 1 | It is a write | With `mem_req` |
-| `mem_addr` | out | 21 | Word address | With `mem_req` |
+| `mem_addr` | out | AW | Word address | With `mem_req` |
 | `mem_wdata` | out | 16 | Write data, in memory order | With `mem_req` |
 | `mem_be` | out | 2 | Byte enables, in memory order; 11 for reads | With `mem_req` |
-| `mem_ack` | in | 1 | The access is taken this clock | A request may follow in the same clock |
+| `mem_ack` | in | 1 | The access is taken this clock | A request may follow in the next clock |
 | `mem_rvalid` | in | 1 | A read's word is back | In order, at most one a clock, any delay |
 | `mem_rdata` | in | 16 | The word, in memory order | With `mem_rvalid` |
-
-### 2.5 Other port (XPORT)
-
-The same handshake as the memory port, for word addresses at or past `CHIP_WORDS`.
-
-| Name | Dir | Width | Meaning |
-|------|-----|-------|---------|
-| `acc_a` | out | 23 | The word address of the access the core wants next |
-| `acc_we` | out | 1 | It is a write |
-| `xp_ok` | in | 1 | The access at `acc_a` can go to the other port; if not, it is an error. Combinational from `acc_a` and `acc_we` |
-| `xp_req`, `xp_we`, `xp_addr` (23), `xp_wdata`, `xp_be` | out | | As `mem_` |
-| `xp_ack`, `xp_rvalid`, `xp_rdata` | in | | As `mem_` |
-
-### 2.6 FIFO (PORTJOB)
-
-| Name | Dir | Width | Meaning |
-|------|-----|-------|---------|
-| `p_rxv` | in | 1 | A byte is waiting in the FIFO towards memory |
-| `p_rxd` | in | 8 | That byte |
-| `p_rxpop` | out | 1 | Take it (strobe) |
-| `p_txr` | in | 1 | The FIFO from memory has room |
-| `p_txpush` | out | 1 | Push `p_txd` (strobe) |
-| `p_txd` | out | 8 | The byte |
-
-The wrapper picks which FIFO from the job (the port's number is its own field).
 
 ## 3. Parameters
 
 | Name | Default | Meaning |
 |------|---------|---------|
-| `CHIP_WORDS` | `24'h200000` | Words of memory on the memory port, from address 0. For example 2 M words for 4 MB |
-| `LE` | 0 | 1: memory is little-endian (the even byte in bits 7-0). For example 1 for an SRAM a Z80 or 6502 sees bytewise, 0 for a 68000's |
-| `MASKIMG` | 1 | 0: no 1 bpp mask image; MASK 1 is an error. Saves about 400 LUTs; for example 0 on a small FPGA |
-| `XPORT` | 0 | 1: the other port, for addresses past `CHIP_WORDS`. For example 1 where the engine can reach registers or a ROM |
-| `PORTJOB` | 0 | 1: port jobs. For example 1 where a FIFO (SD card, USB serial) is fed by the engine |
-| `LINE` | 0 | 1: LINE jobs (OP 2). 0: OP 2 is an error, and LINE's states and registers are left out (unless `EDGES` needs them). For example 1 on a machine whose software draws lines with the engine |
-| `EDGES` | 0 | 1: EDGES jobs (OP 3), which step their lines with LINE's machinery (built for either). 0: OP 3 is an error, and EDGES' states and registers are left out |
-
-With `XPORT` or `PORTJOB` at 0, that part's inputs are ignored and its requests and strobes stay 0 (its data outputs are not driven). With `LINE` and `EDGES` at 0, the clip inputs and the octant inputs are ignored.
+| `AW` | 21 | Word address width, 15 to 23. A job's byte addresses are cut to AW + 1 bits: there is no range check, and an address past the memory wraps. The machine's memory map keeps jobs in bounds |
+| `LE` | 0 | 1: memory is little-endian (the even byte in bits 7–0) |
+| `MASKIMG` | 1 | 0: no 1-bit mask image; `job_mask` 1 is an error. For example 0 on a small FPGA |
 
 ## 4. Behaviour
 
-### 4.1 Channels
+### 4.1 Pixels in memory
 
-A channel is idle or busy. `start_ld` or `start_run` makes an idle channel busy. A busy channel is runnable while `enable` is set and its `pause` bit is clear. The engine picks the next runnable channel after the last one it picked (round robin), and gives it a turn.
+A row is a run of pixels packed from the left: in each byte the leftmost pixel is in the top bits, and bytes follow in address order. `LE` only says which half of a 16-bit memory word holds the even byte. A is always 1 bit a pixel, packed the same way.
 
-A job ends when its last row (or pixel, edge or byte) is written. Then:
+### 4.2 A job
 
-| Case | What happens |
-|------|-------------|
-| An error | `busy` clears, `err` sets, `irq_set` for the channel; `ea_q` holds the address that failed (or the descriptor address for a bad job or descriptor) |
-| End, `job_next` not 0, no stop asked | The descriptor address becomes `job_next`; the channel loads it next turn; `irq_set` if `job_irq` |
-| End otherwise | `busy` clears, `done` sets; `irq_set` if `job_irq` |
-| A stop asked, at the end of a turn | `busy` clears, `done` sets; no interrupt |
+| Step | What happens |
+|------|--------------|
+| Start | `start_run`, or `start_ld` after the descriptor load (16 word reads). `busy` sets, `err` clears |
+| Set-up | 8 clocks of `su_v`, then the job ports are checked (4.6) |
+| Each row | The row's destination words, one after another (4.3) |
+| Row end | A's row address moves by `job_astride`, B's by `job_bstride`, D's by `job_dstride` |
+| Job end | After the last row: `done` strobes if `job_irq`. If `job_next` is not 0 and no stop was asked, the descriptor address becomes `job_next` and that descriptor is loaded and run. Otherwise `busy` clears and `done` strobes |
 
-The strobes take effect after the engine's own changes in the same clock: a `clr_done` in the clock a job ends leaves `done` clear; a start or address write is looked at against `busy` as it was before the clock.
+A width or height of 0 is an empty job: it ends at once, chaining as any other.
 
-### 4.2 A turn
+### 4.3 A destination word
 
-| Step | Clocks |
-|------|--------|
-| Pick (from idle) | 1 |
-| Restore | 1 |
-| Descriptor load (start_ld, or after a chain) | 16 word reads, then the set-up |
-| Set-up (`su_v`) | 8 |
-| Check, then the row start | 1 and 1 for the job, then 3 per row (LINE: 1) |
-| A group | Reads (B, then A, then C), then the writes; see below |
-| Save | 1 |
+Each destination word of a row takes these memory accesses, in this order:
 
-The set-up runs when a job starts and whenever a channel comes back after another one had a turn. The core uses the job ports from the clock after the last `su_v` clock until the next set-up. The job's progress (rows left, addresses, the shifter's carried word) is the core's, saved per channel.
+| Access | When |
+|--------|------|
+| Read B | B is memory, and the minterm depends on B or the mask is the key colour. One word for each 16 source bits used: sometimes two for the row's first word, none for a word the last read still covers |
+| Read A | The mask is the image and the minterm depends on A: one word for every 16 pixels |
+| Read C | The minterm depends on C, or the word is the row's first or last and a byte of it is only partly inside the row |
+| Write D | Always, with byte enables off for bytes wholly outside the row |
 
-A channel running alone (the only runnable one, no stop asked) goes straight from the end of a group to its next group or row, without the save, pick, restore and set-up.
+So a fill with a constant is one access a word; a plain copy two; a cookie-cut with a key colour three. The core puts up one request at a time. A word's B and C reads are asked for one after the other without waiting for data; its write follows when both are back, and an A read is waited for on its own. The core may read one source or mask word past the row's last pixel. How fast a job runs is mostly the memory cycles the scheduler gives it.
 
-### 4.3 A group
-
-A group is up to 16 destination words of a row.
-
-1. B: the source words needed, up to 17 (one ahead for the shift).
-2. A: the mask image's words, when `job_mask` is 1.
-3. C: the destination words needed: every one when the result depends on C, else only the row's first and last words when they cover part of a byte.
-4. The writes, one a clock when the memory takes them. A word whose pixels are all left alone is not written.
-
-When B is the only read, the writes start as soon as the last B read is asked for, and each waits only for its own source word. The group's counts are registered before anything decides on them (for timing), so the B phase always takes at least a clock: a group with nothing to read starts its writes from there, and a group with only C words to read goes on to them without waiting for a write still held from the last group. The last write of a group may still be waiting when the next group of the same channel starts.
-
-The datapath per destination word:
+The datapath for a word:
 
 | Stage | What |
 |-------|------|
-| B | `{last B word, this B word} << shift`, top 16 bits; or the constant |
-| A | The mask image's bits, one per pixel, widened to the pixel; or B against the key colour; or all ones |
-| Edge masks | The row's first and last words cover only their pixels |
-| Combine | The minterm of A, B and C; or ADD of B to C per pixel |
-| Write | The result where the masks are set, C elsewhere; byte enables from the masks |
+| B | The source bits for this word, lined up to the destination by a barrel shifter over the last and the current source word; or `job_value` |
+| A | The image's bits, one a pixel, widened to the pixel; or 1 where B's pixel differs from `job_key`; or all ones |
+| Combine | The minterm of A, B and C, bit by bit |
+| Edges | In the row's first and last words, pixels outside the row keep C |
 
-Backwards jobs reverse each word's bits on the way in and out, so the same shifter serves.
+"Depends on" is read from `job_minterm` alone: it depends on C when bits 7, 5, 3, 1 differ from bits 6, 4, 2, 0; on B when bits 7, 6, 3, 2 differ from 5, 4, 1, 0; on A when bits 7–4 differ from bits 3–0. With the mask "none", A is all ones and only bits 7–4 matter.
 
-### 4.4 Constant B and byte order
+### 4.4 Direction
 
-Inside the core a word holds its even byte in bits 15-8. With `LE` set, words are swapped as they come from memory and as they go back. A constant B at 8 bpp gives byte address a the value's byte a mod 4: bits 7-0 first when `LE`, bits 31-24 first when not. At 1, 2 and 4 bpp the constant is the value's low pixel, repeated.
+A copy whose source and destination overlap must not overwrite source pixels it has yet to read.
 
-Descriptor words (`dl_w0`, `dl_w1`) and EDGES' point coordinates are taken as stored: a 16-bit number in the memory's own order. An EDGES edge word holds point a's number in its even byte and b's in its odd byte.
+- **Rows.** The core always goes from the row the addresses name to the next by adding the strides. To work from the bottom row up, software gives the bottom row's addresses and negative strides.
+- **Within a row.** With `job_rtl` the core works each row from its last pixel to its first: the addresses and bit positions name the row's last pixel, and words are taken in falling address order. Use it when the destination is to the right of the source in the same rows.
 
-### 4.5 LINE and EDGES
+The result of a job is the same in either direction when source and destination don't overlap.
 
-These are built only with their parameters set. Without them, a job with OP 2 or OP 3 ends at once with an error, as any bad op does.
+### 4.5 Stop and enable
 
-LINE draws `job_width` pixels from `job_daddr`/`job_dbit`, stepping one pixel along the longer axis each time and one along the shorter when the error term is above 0 (Bresenham). x and y (`job_aaddr`, `job_baddr` bits 15-0) are counted only to clip. A pixel's A is bit 31 - (n mod 32) of `job_value`, its B the value's bits 7-0. Pixels outside the clip rectangle are left alone. A turn is 16 pixels.
+`stop` takes effect after the destination word in hand is written: `busy` clears and `done` strobes; no chain is followed. The job is not resumable. `enable` low holds the core before its next memory request; reads on their way are still taken.
 
-EDGES reads `job_width` edge words from `job_baddr`, each naming two points in the table at `job_aaddr` (x then y, a word each), and draws each edge as a line from its first point. An edge with an end outside -16384 to 16383, or wholly beyond one side of the clip rectangle, is left out.
+### 4.6 Errors
 
-LINE and EDGES take no DESC or MASK. LINE's width is at most 32,768 and its height at most width - 1.
+Checked after the set-up: `job_bad`; `job_mask` 3; `job_mask` 1 without `MASKIMG`. An error ends the job and the chain: `busy` clears, `err` sets, `done` strobes, and nothing is written. `da_q` still names the descriptor.
 
-### 4.6 Port jobs
+### 4.7 Reset
 
-With `PORTJOB`, a job with `job_bport` or `job_dport` moves `job_width` bytes between a FIFO and memory, up to 8 a turn; a channel whose FIFO is not ready ends its turn. It must be a plain copy: BLIT, minterm `0xCC`, no mask, 8 bpp, one row, forwards, not both ports. Anything else is an error.
+`rst` makes the core idle with no request, `err` clear and the descriptor address 0.
 
-### 4.7 Errors
+### 4.8 The exact result
 
-| Error | Address in `ea_q` |
-|-------|------------------|
-| An access past `CHIP_WORDS` that the other port does not take | The byte address of the access |
-| A descriptor address not a multiple of 4, or not wholly reachable | The descriptor address |
-| OP 4-7, OP 2 without `LINE`, OP 3 without `EDGES`, MASK 3, MASK 1 without `MASKIMG`, `job_bad`, a bad LINE, EDGES or port job | The descriptor address |
+This is the definition the test model follows. A bit position n means bit 7 − (n mod 8) of the byte at address n div 8, so positions run left to right through a row. All byte addresses are taken modulo 2^(AW + 1).
 
-After an error the core waits for every read it asked for to come back, then ends the job.
+```
+bits = 1 << job_bpp
+for r = 0 .. job_height − 1:                              # rows in the order given
+    pd = 8 × (job_daddr + r × job_dstride) + job_dbit × bits
+    pb = 8 × (job_baddr + r × job_bstride) + job_bbit × bits
+    pa = 8 × (job_aaddr + r × job_astride) + job_abit
+    for i = 0 .. job_width − 1:                           # pixels in the order worked
+        k = −i if job_rtl else i
+        C = the pixel at bit position pd + k × bits       # bits wide
+        B = the pixel of job_value over C's place (below)   if job_bconst
+            the pixel at bit position pb + k × bits       otherwise
+        A = 1                                             if job_mask = 0
+            the bit at bit position pa + k                if job_mask = 1
+            1 if B ≠ job_key's low bits, else 0           if job_mask = 2
+        for each bit j of the pixel:
+            D[j] = job_minterm[4 × A + 2 × B[j] + C[j]]
+        the pixel at pd + k × bits becomes D
+```
 
-### 4.8 Memory ports
+- **The constant.** `job_value` lies over every destination memory word (the two bytes at an even address, in address order): a pixel takes the bits of `job_value` at its own place in its word. So a pattern in `job_value` lines up with memory words, not with the rectangle's left edge, and a plain colour is the pixel value repeated to fill 16 bits (0x5555 for colour 1 at 2 bits, 0x0707 for colour 7 at 8).
+- **What is written.** Only bytes that hold at least one pixel of the row are written. In such a byte, pixels outside the row keep their value, which is why the row's first and last words may need C read (4.3).
+- **Overlap.** The result above is what the core gives whenever no memory word is written before it is read as A or B for a later pixel. Reads happen a word at a time, a destination word's reads before its write, and a B word is read only when its first bit is needed. So: a destination to the left of or above the source is safe as given; a destination to the right in the same rows needs `job_rtl`; one below needs the rows bottom-up (negative strides, 4.4). With an overlap worked the wrong way the result is not specified.
+- **Nothing else changes.** No word outside the destination rows is written, and A and B are never written.
 
-One request is out at a time on each port; `mem_req` stays up, with the same fields, until `mem_ack`. The core may put up its next request in the clock of `mem_ack`. Reads come back in order, at most one a clock, with any delay. The core does not use one port until the other's reads are back and its request taken.
+### 4.9 Worked examples
+
+Minterms: bit a×4 + b×2 + c gives D. The three every program uses:
+
+| Minterm | D | Use |
+|---------|---|-----|
+| 0xCC | B | Copy, or fill with a constant B |
+| 0xCA | B where A is 1, else C | Cut out: copy through a mask |
+| 0x66 | B xor C | Invert with a constant; draw and undraw |
+
+A 320-pixel-wide, 8-bit bitmap at byte address 0x10000 (stride 320) in each case.
+
+| Job | Ports |
+|-----|-------|
+| Fill the 32×16 rectangle at (40, 20) with colour 7 | `minterm` 0xCC, `mask` 0, `bpp` 3, `bconst` 1, `value` 0x0707, `width` 32, `height` 16, `daddr` 0x10000 + 20 × 320 + 40, `dbit` 0, `dstride` 320. One write a word: 16 words a row |
+| Copy a 32×32 image at 0x20000 (stride 32) to (100, 50) | `minterm` 0xCC, `mask` 0, `bconst` 0, `baddr` 0x20000, `bstride` 32, `daddr` 0x10000 + 50 × 320 + 100, `dstride` 320, `width` 32, `height` 32. A read and a write a word |
+| The same, with colour 0 transparent | As the copy, with `minterm` 0xCA, `mask` 2, `key` 0. A B read, a C read and a write a word |
+| An 8×8 character from a 1-bit font at 0x30000 (one byte a row) in colour 15 at (8, 8) | `minterm` 0xCA, `mask` 1, `aaddr` 0x30000 + 8 × character, `abit` 0, `astride` 1, `bconst` 1, `value` 0x0F0F, `daddr` 0x10000 + 8 × 320 + 8, `dstride` 320, `width` 8, `height` 8 |
+| Scroll the whole 320×200 picture down 8 rows | A copy with the rows bottom-up: `baddr` 0x10000 + 191 × 320, `daddr` 0x10000 + 199 × 320, `bstride` −320, `dstride` −320, `width` 320, `height` 192, `rtl` 0 |
+| Scroll it right 4 pixels | A copy right to left: `rtl` 1, `baddr` 0x10000 + 315 (the last source pixel of row 0), `daddr` 0x10000 + 319, strides 320, `width` 316, `height` 200 |
+
+At 4 bits a pixel, an object at an odd x has `dbit` 1: a 16-pixel-wide row then spans five bytes, the first and last half covered, so its first and last words are read as C and merged even for a plain copy.
+
+### 4.10 Sequences
+
+**A descriptor load** (`start_ld`, or a chain). The core reads the 16 words at the descriptor address in rising order, one request after another. As each pair comes back it strobes `dl_v` with `dl_i` 0 to 7 and the two words as read from memory (`dl_w0` the lower address). While `dl_wait` is high it holds the next strobe. After the eighth, the set-up starts.
+
+**The set-up.** `su_v` is high for 8 clocks with `su_i` counting 0 to 7. A wrapper with its job in a RAM reads long word `su_i` each clock and latches its fields; a wrapper with the job in flip-flops ignores it. From the clock after, the job ports must be steady until the job ends.
+
+**A two-word fill** (no reads), with the scheduler granting every other clock:
+
+```
+ clk       0    1    2    3    4    5    6
+ su_v      ...1  0
+ mem_req        1    1    1    1    0
+ mem_we         1    1    1    1
+ mem_addr       w0   w0   w1   w1
+ mem_ack             1         1
+ busy      1    1    1    1    1    0
+ done                               1        (the job has job_irq, or the chain ends)
+```
+
+**A chain.** When a job ends with `job_next` not 0, `da_q` becomes `job_next` and the load, set-up and job follow at once, with `busy` high throughout. `done` strobes at each job's end that has `job_irq`, and when the chain ends (one strobe if the last job has `job_irq`).
+
+**Strobes while busy.** `start_ld`, `start_run` and `da_we` are ignored. `stop` during a descriptor load or set-up ends the chain before the job starts.
 
 ## 5. How a machine uses it
 
-The wrapper provides:
-
-- Registers for each channel's job, written by the CPU while the channel is idle, and by descriptor loads. While `su_v` is set it puts channel `cur`'s job on the job ports; `su_i` lets it read a RAM a long word a clock. The ports must not change between set-ups.
-- A store for loaded descriptors: on `dl_v`, long word `dl_i` of channel `cur` is `dl_w0` and `dl_w1`; `dl_wait` stays up until it is written.
-- The control register: start (load or run), stop, pause; clearing `done` and `err`; the descriptor address write, merging bytes against `da_q`.
-- The interrupt flags: set from `irq_set`, cleared by the CPU; the enable mask.
-- Any checks of its own fields, through `job_bad`.
-- With `XPORT`, `xp_ok` and the port's targets (registers, ROM), returning reads in order; `dl_xok` where descriptors may sit there.
-- With `PORTJOB`, the FIFO the job names.
-
-Field layouts, register addresses and the descriptor format are the machine's.
+- A wrapper with the job registers (a small RAM of 8 long words is cheapest), which decodes the job onto the ports in the clocks of `su_v`, stores descriptor long words on `dl_v`, and turns register writes into `start_ld`, `start_run`, `stop` and `da_we`.
+- One requester on `dmac.v` for the memory port.
+- `done` to an interrupt flag, if wanted; `busy` and `err` in a status register.
+- Software clips rectangles to the bitmap, and keeps jobs inside the memory.
 
 ## 6. Test plan
 
-`test/blitter` (`make -C test blitter`) runs one testbench three times: with `LE` 0 and 1, the core built with every option (`LINE` and `EDGES` 1); and with `LINE` and `EDGES` 0, where the LINE and EDGES jobs are replaced by checks that OP 2 and OP 3 are errors and write nothing. The testbench acts as the wrapper, keeping each channel's job in arrays. Memory answers after random waits; reads come back in order 2-5 clocks later. Each result is checked byte by byte against a model of the pixels.
-
-| Test | Checks |
-|------|--------|
-| Fill 8 bpp | Constant B, byte order of the value, edge words |
-| Copies at 1, 2, 4 and 8 bpp | Bit offsets, the shifter, edge masks, strides |
-| Minterms | XOR (`0x66`), B AND NOT C (`0x0C`), all ones (`0xFF`) |
-| Backwards | An overlapping copy in place; 1 bpp with offsets |
-| Key colour, mask image | Cookie cut (`0xCA`) by key and by a 1 bpp image |
-| ADD | Saturating, 8 bpp |
-| Four channels at once | Round robin, set-up again on each return |
-| Other port | A copy from the other port to memory |
-| LINE | A line with its end clipped |
-| EDGES | One edge drawn from a point table, one left out (wholly left of the clip rectangle) |
-| LINE and EDGES left out | OP 2 and OP 3 are errors at the descriptor address, nothing written |
-| Port jobs | FIFO to memory, memory to FIFO |
-| Descriptor chain | A load after a job; `dl_` strobes, the new address, two interrupts |
-| Errors | An address past memory; a bad op |
-
-The machines' system tests check their wrappers: register access, descriptors in their layout, timing and random jobs against a model.
+| Test | What it checks |
+|------|----------------|
+| `test/blitter`, random | The core against a pixel-exact model, on random jobs: every depth, bit position, mask kind, minterm, direction and stride sign, constant and memory B, widths from 1 pixel, chains, a memory that answers after random waits. Every memory write (address, data, byte enables) and the final memory are compared, and that no word outside the destination rows is written |
+| `test/blitter`, directed | Overlapping copies in all four directions; the three access counts of 4.3; stop mid-job; `enable` held low mid-job; each error; an empty job in a chain; both byte orders |
+| `drivers.sh` | One driver a register, in each build |
+| The machines | Each machine's Vivado build and screens, as the gate before a pull request goes up |
 
 ## 7. Open points
 
 | # | Point |
 |---|-------|
-| 1 | The other port's ordering rule (one port's reads back before the other's) is simple and slow for mixed jobs |
-| 2 | A group is fixed at 16 words; a smaller one would save buffer space on a small FPGA |
-| 3 | The test does not cover signed ADD, EDGES' range check, or a stop and pause mid-job; the machines' tests do |
-| 4 | EDGES on its own still builds LINE's stepping, which it uses; only OP 2's check and set-up are then left out |
+| B1 | Choices made in this draft that were not in the grilling, for review: rows backwards by negative strides instead of a core mode; no address range check; every destination word is written (the first design skipped words left unchanged); `job_value` is one 16-bit word; `stop` is not resumable |
+| B2 | Size and speed are not targets (Jon: simple first, measure after). In Yosys for 7-series the core is 894 LUTs and 309 flip-flops without the mask image (the KS2's build) and 1,354 and 396 with it; the first design without LINE and EDGES was about 2,500 and 2,700 in the same measure. In Vivado, alone at 100 MHz: 622 LUTs with +1.0 ns of slack on the KS2's part (no mask image), 1,060 and +1.3 ns on retro68k's (with it) |
+| B3 | A FIFO mover for retro68k's SD card and serial jobs is decided later; the second port (palette and register loads) is dropped |
+| B5 | Both machines reviewed revision 2 at 6793fd9 and agree. Their one change is in: A has its own stride (`job_astride`), since a 1-bit mask beside an 8-bit source would otherwise need its rows padded eightfold |
+| B4 | Closed: the new blitter and `raster` landed together in PR #14 and the first design was deleted with them (Jon, at retro-z80's request, so main never lacked lines). Both machines' wrappers and software need porting: the job formats are new. `geom` follows |

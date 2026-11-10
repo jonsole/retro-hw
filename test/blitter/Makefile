@@ -1,26 +1,24 @@
-# The blitter: directed jobs against a memory model, with the memory big- and
-# little-endian, LINE and EDGES built; and once with them left out
+# The blitter against a pixel-exact model of its spec (4.8), on random and
+# directed jobs: big- and little-endian memory, and without the mask image
 IVERILOG ?= iverilog
 VVP      ?= vvp
 RTL      := ../../rtl
+TBS      := be le nomask
 
 .PHONY: test
-test: tb_be.vvp tb_le.vvp tb_nol.vvp
-	$(VVP) -n tb_be.vvp | tee be.log
-	@grep -q "^TEST PASSED" be.log
-	$(VVP) -n tb_le.vvp | tee le.log
-	@grep -q "^TEST PASSED" le.log
-	$(VVP) -n tb_nol.vvp | tee nol.log
-	@grep -q "^TEST PASSED" nol.log
+test: $(TBS:%=build/%.log)
+	@for f in $^; do grep -q '^TEST PASSED' $$f || { echo "FAILED: $$f"; exit 1; }; done
+	@echo "blitter: all passed"
 
-tb_be.vvp: tb_blitter.v $(RTL)/blitter.v
+build/%.log: build/%.vvp
+	$(VVP) -n $< | tee $@
+
+build/be.vvp: tb_blitter.v $(RTL)/blitter.v
+	mkdir -p build
 	$(IVERILOG) -g2005 -Wall -Wno-timescale -s tb_blitter -o $@ $^
-
-tb_le.vvp: tb_blitter.v $(RTL)/blitter.v
-	$(IVERILOG) -g2005 -Wall -Wno-timescale -DLE=1 -s tb_blitter -o $@ $^
-
-tb_nol.vvp: tb_blitter.v $(RTL)/blitter.v
-	$(IVERILOG) -g2005 -Wall -Wno-timescale -DLINES=0 -s tb_blitter -o $@ $^
-
-clean:
-	rm -f *.vvp *.log
+build/le.vvp: tb_blitter.v $(RTL)/blitter.v
+	mkdir -p build
+	$(IVERILOG) -g2005 -Wall -Wno-timescale -Ptb_blitter.LE=1 -s tb_blitter -o $@ $^
+build/nomask.vvp: tb_blitter.v $(RTL)/blitter.v
+	mkdir -p build
+	$(IVERILOG) -g2005 -Wall -Wno-timescale -Ptb_blitter.MASKIMG=0 -s tb_blitter -o $@ $^

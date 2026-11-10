@@ -30,6 +30,17 @@ Written after the fact on 8 November 2026, for the scheduler rework (PRs #2 to #
 
 No records of its own yet. Two scheduler decisions changed it: [dmac/0011](dmac/0011-no-memory-tag.md) (no tag) and [dmac/0013](dmac/0013-park-12-5-ns.md) (the parked 12.5 ns cycle).
 
+## Blitter, rasteriser and geometry engine (`blitter/`)
+
+From the blitter redesign grilling, 10 November 2026.
+
+| # | Decision | Status |
+|---|----------|--------|
+| [0001](blitter/0001-three-cores.md) | One blitter becomes three cores | accepted |
+| [0002](blitter/0002-one-job-with-chains.md) | One job at a time, with a chain to the next | accepted |
+| [0003](blitter/0003-full-minterm-software-clips.md) | The full minterm stays; the blitter does not clip or range-check | accepted |
+| [0004](blitter/0004-raster-and-geom.md) | Lines and triangles in `raster`; point transforms in `geom` | accepted |
+
 ## Layer fetch (`layer_fetch/`)
 
 From the layers grilling and the machines' reviews of the spec, 8 November 2026 (PR #7).
