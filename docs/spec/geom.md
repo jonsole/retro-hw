@@ -67,11 +67,11 @@ Sixteen words at `job_maddr`, read once at the start of each job:
 For a point (x, y, z):
 
 1. **View.** vx = sat16(((m00·x + m01·y + m02·z) >> 14) + tx), and likewise vy and vz from the matrix's second and third rows with ty and tz. The three products are summed in full (34 bits) before the shift, which is arithmetic (it rounds down); sat16 limits the result to −32768 … 32767.
-2. **Projection**, with `job_persp`: if vz < znear, the point is behind: screen x and screen y are both written as 0x8000. Otherwise sx = sat16(cx + (vx·d) / vz) and sy = sat16(cy + (vy·d) / vz), the divide rounding towards zero. znear must be at least 1.
-3. Without `job_persp`: sx = sat16(cx + vx), sy = sat16(cy + vy), and nothing is marked behind.
+2. **Projection**, with `job_persp`: if vz < znear, the point is behind: screen x and screen y are both written as 0x8000. Otherwise sx = satp(cx + floor((vx·d) / vz)) and sy = satp(cy + floor((vy·d) / vz)): the divide rounds down, so a point crossing the screen's centre steps evenly, and satp limits the result to −32767 … 32767. znear must be at least 1.
+3. Without `job_persp`: sx = satp(cx + vx), sy = satp(cy + vy), and nothing is marked behind.
 4. **Result.** Three words are written: sx, sy, vz.
 
-Screen y grows downwards if the matrix says so: the engine does not flip any axis. 0x8000 (−32768) is never a projected value's meaning when both words hold it; software tests either word.
+Screen y grows downwards if the matrix says so: the engine does not flip any axis. A projected screen x or y is never 0x8000 (−32768), so that value in either word always means behind, and software tests one word.
 
 ### 4.3 A job, and its time
 
@@ -100,13 +100,14 @@ The job ends as a blitter job does: `done` if `job_irq`, then the next descripto
 | Test | What it checks |
 |------|----------------|
 | `test/geom`, random | The core against a bit-exact model of 4.2: random points, matrices and view blocks, both `job_persp` settings, values that saturate, points behind and just in front of the near plane, results written over the points, chains, both byte orders. Every memory write is compared |
-| `test/geom`, directed | The identity matrix; a 90° rotation; d and vz chosen so the divide rounds each way; the extremes −32768 and 32767; count 0; stop mid-job; the error |
+| `test/geom`, directed | The identity matrix; a 90° rotation; negative and positive quotients with a remainder, to check the divide rounds down; results at the limits ±32767; count 0; stop mid-job; the error |
 | `drivers.sh`, the machines | As for the blitter. retro-z80's KS2 does not build this core |
 
 ## 7. Open points
 
 | # | Point |
 |---|-------|
-| G1 | Choices made in this draft, for review: the view block in memory rather than on ports; three words out a point (screen x, screen y, view z); 0x8000 marks a point behind the near plane; the divide rounds towards zero; no axis is flipped; one view block a job |
+| G1 | Choices made in this draft, for review: the view block in memory rather than on ports; three words out a point (screen x, screen y, view z); 0x8000 marks a point behind the near plane; the divide rounds down; no axis is flipped; one view block a job |
 | G2 | 16-bit fixed point was chosen for size. A world larger than ±32767 units, or a need for sub-pixel screen positions, would be a later revision |
+| G4 | Both machines reviewed revision 1 at 6793fd9. retro-z80's two changes are in: projected values saturate to ±32767 so 0x8000 only ever means behind, and the divide rounds down, matching its own register-driven geometry unit so both give the same screen points |
 | G3 | Not in this revision: clipping lines and triangles at the near plane (the CPU does it, from view z), back-face tests, lighting, and driving the rasteriser directly |

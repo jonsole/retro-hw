@@ -41,7 +41,7 @@ Changed only while idle or in the clocks of `su_v` (8 clocks, `su_i` 0 to 7, at 
 | `job_x2`, `job_y2` | in | 16 each | TRI: point 2 |
 | `job_daddr` | in | 24 | The byte holding pixel (0, 0) of the bitmap |
 | `job_dstride` | in | 16 | Signed bytes from one row of the bitmap to the next |
-| `clip_xmin`, `clip_xmax`, `clip_ymin`, `clip_ymax` | in | 16 each | The window, signed, inclusive. Only pixels inside are written |
+| `clip_xmin`, `clip_xmax`, `clip_ymin`, `clip_ymax` | in | 16 each | The window, signed, inclusive. Only pixels inside are written. These are the wrapper's own registers, shared by every job: they are not part of a descriptor, which has no room for them. Held while busy |
 | `job_next` | in | 24 | The next descriptor's address; 0 for none |
 | `job_bad` | in | 1 | The wrapper rejects the job |
 
@@ -99,7 +99,8 @@ The job ends as a blitter job does: `done` if `job_irq`, then the next descripto
 
 ## 5. How a machine uses it
 
-- A wrapper as for the blitter: job registers, descriptor store, start and stop strobes. The clip window may be the wrapper's own registers, shared by every job.
+- A wrapper as for the blitter: job registers, descriptor store, start and stop strobes, and the clip window's registers.
+- Software clips long lines roughly before handing them over: every pixel is stepped, so an end near ±32767 costs up to 64,000 clocks.
 - One requester on `dmac.v`.
 - The CPU supplies screen coordinates, or `geom` writes them to memory for the CPU to build jobs from.
 - A triangle fan or a convex polygon is a chain of TRI jobs.
@@ -120,4 +121,5 @@ The job ends as a blitter job does: `done` if `job_irq`, then the next descripto
 | R1 | Choices made in this draft, for review: coordinates are whole pixels (no sub-pixel bits); the fill rule (top-left, 16 fraction bits, floor slopes); lines step every pixel even off-window (the first design did the same); `job_nolast`; `job_daddr` names pixel (0, 0) and the core multiplies y by the stride |
 | R2 | Jon chose triangle points over ready-made slopes, so the core has a divider. A serial one is small but each triangle pays about 70 clocks before its first pixel |
 | R3 | The first design's EDGES job (one pixel a row, for a later fill) is gone: TRI fills directly. retro-z80's fast3d demo moves from edges plus a fill to TRI jobs |
+| R5 | Both machines reviewed revision 1 at 6793fd9 and agree; the clip window is now stated as the wrapper's shared registers, and the guide note on long lines is in section 5. retro-z80 may build `TRI` 0 on the KS2 at first, for room |
 | R4 | Filled shapes other than triangles (trapezoids, convex polygons in one job), shading and depth are not in this revision |

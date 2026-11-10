@@ -63,7 +63,8 @@ The wrapper decodes its job registers onto these ports. It changes them only whi
 | `job_irq` | in | 1 | Strobe `done` when this job ends |
 | `job_value` | in | 16 | The constant B: one destination word of pixels, the leftmost in the top bits |
 | `job_key` | in | 8 | The key colour, in its low `bpp` bits |
-| `job_sstride` | in | 16 | Signed bytes from one row's start to the next, for A and for B |
+| `job_astride` | in | 16 | Signed bytes from one row's start to the next, for A (a 1-bit mask's rows are shorter than an 8-bit source's) |
+| `job_bstride` | in | 16 | The same for B |
 | `job_dstride` | in | 16 | The same for D |
 | `job_width` | in | 16 | Pixels per row; 0 is an empty job |
 | `job_height` | in | 16 | Rows; 0 is an empty job |
@@ -121,7 +122,7 @@ A row is a run of pixels packed from the left: in each byte the leftmost pixel i
 | Start | `start_run`, or `start_ld` after the descriptor load (16 word reads). `busy` sets, `err` clears |
 | Set-up | 8 clocks of `su_v`, then the job ports are checked (4.6) |
 | Each row | The row's destination words, one after another (4.3) |
-| Row end | A's and B's row addresses move by `job_sstride`, D's by `job_dstride` |
+| Row end | A's row address moves by `job_astride`, B's by `job_bstride`, D's by `job_dstride` |
 | Job end | After the last row: `done` strobes if `job_irq`. If `job_next` is not 0 and no stop was asked, the descriptor address becomes `job_next` and that descriptor is loaded and run. Otherwise `busy` clears and `done` strobes |
 
 A width or height of 0 is an empty job: it ends at once, chaining as any other.
@@ -191,7 +192,8 @@ Checked after the set-up: `job_bad`; `job_mask` 3; `job_mask` 1 without `MASKIMG
 
 | # | Point |
 |---|-------|
-| B1 | Choices made in this draft that were not in the grilling, for review: rows backwards by negative strides instead of a core mode; no address range check; A and B share one stride; every destination word is written (the first design skipped words left unchanged); `job_value` is one 16-bit word; `stop` is not resumable |
+| B1 | Choices made in this draft that were not in the grilling, for review: rows backwards by negative strides instead of a core mode; no address range check; every destination word is written (the first design skipped words left unchanged); `job_value` is one 16-bit word; `stop` is not resumable |
 | B2 | Size and speed are not targets (Jon: simple first, measure after). The first design is about 3,200 LUTs in retro-z80's KS2 build with LINE and EDGES |
 | B3 | A FIFO mover for retro68k's SD card and serial jobs is decided later; the second port (palette and register loads) is dropped |
+| B5 | Both machines reviewed revision 2 at 6793fd9 and agree. Their one change is in: A has its own stride (`job_astride`), since a 1-bit mask beside an 8-bit source would otherwise need its rows padded eightfold |
 | B4 | `rtl/blitter.v` is still the first design. It is replaced, not kept beside this one, when the new RTL lands; a machine that needs LINE and EDGES stays on an older commit until `raster` exists |
