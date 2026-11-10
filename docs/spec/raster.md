@@ -1,6 +1,6 @@
 # Rasteriser (raster)
 
-Status: **draft**, revision 1 for review. A new core, from the blitter redesign: it replaces the first blitter's LINE and EDGES jobs. No RTL yet.
+Status: **draft**, revision 1 for review. A new core, from the blitter redesign: it replaces the first blitter's LINE and EDGES jobs. `rtl/raster.v` implements it.
 
 The rasteriser draws lines and flat-filled triangles into a bitmap in memory, from screen coordinates. A triangle is filled directly, a row at a time, so there is no separate edge pass and fill job. Each pixel is written through the blitter's minterm rule with a constant colour, and clipped to a window. The CPU, or the geometry engine ([geom](geom.md)), supplies the screen coordinates.
 
@@ -15,7 +15,7 @@ Like the blitter it has no registers, takes one job at a time with a chain to th
 | Pixel depths | 1, 2, 4 and 8 bits |
 | Colour | A constant, through D = minterm(A, B, C): B the colour, C the old pixel, A a 16-bit pattern along a line (all ones in a triangle) |
 | Clipping | A window, inclusive, per job |
-| Slopes | Worked out inside, by a serial divider: about 20 clocks an edge |
+| Slopes | Worked out inside, by a serial divider: about 35 clocks an edge |
 | Memory | One word port. Reads only where the result needs the old contents |
 | Registers | None: the wrapper's |
 
@@ -49,9 +49,9 @@ Changed only while idle or in the clocks of `su_v` (8 clocks, `su_i` 0 to 7, at 
 
 | Name | Default | Meaning |
 |------|---------|---------|
-| `AW` | 21 | Word address width, as the blitter's: no range check. The clip window keeps a job inside its bitmap |
+| `AW` | 21 | Word address width, 16 to 23, as the blitter's: no range check. The clip window keeps a job inside its bitmap |
 | `LE` | 0 | 1: memory is little-endian |
-| `TRI` | 1 | 0: lines only; a TRI job is an error, and the divider is left out |
+| `TRI` | 1 | 0: lines only; a TRI job is an error, and the triangle logic and divider are left out (about half the core) |
 
 ## 4. Behaviour
 
@@ -87,7 +87,7 @@ So two triangles that share an edge fill every pixel along it exactly once, a tr
 | Descriptor load (`start_ld`, or a chain) | 16 word reads |
 | Set-up (`su_v`) | 8 |
 | The first row's address (y × stride) | About 16 |
-| TRI: sort and three slopes | About 70 |
+| TRI: sort and three slopes | About 110 |
 | LINE: each pixel stepped | 1, plus its memory accesses if written |
 | TRI: each row | 1, plus one memory access a destination word of the span (two where C is read) |
 
@@ -166,7 +166,7 @@ Row 9, the bottom point's, is not drawn: a triangle below sharing that point or 
 The descriptor load and set-up are the blitter's (4.10). Then:
 
 - **LINE.** About 16 clocks to find the first row's address, then one clock a pixel stepped. A pixel inside the window is one write (after one read, where 4.1 says); the stepping waits for it.
-- **TRI.** The sort and the three divides, one after another on the one divider, about 70 clocks. Then each row: one clock to step both edges, and the span's words, one write each (after one read where needed). A row outside the window, or with an empty span, costs its one clock.
+- **TRI.** The sort and the three divides, one after another on the one divider, about 110 clocks. Then each row: one clock to step both edges, and the span's words, one write each (after one read where needed). A row outside the window, or with an empty span, costs its one clock.
 - `stop` is taken between pixels (LINE) or rows (TRI).
 
 ### 4.8 Errors and reset
@@ -195,7 +195,8 @@ The descriptor load and set-up are the blitter's (4.10). Then:
 | # | Point |
 |---|-------|
 | R1 | Choices made in this draft, for review: coordinates are whole pixels (no sub-pixel bits); the fill rule (top-left, 16 fraction bits, floor slopes); lines step every pixel even off-window (the first design did the same); `job_nolast`; `job_daddr` names pixel (0, 0) and the core multiplies y by the stride |
-| R2 | Jon chose triangle points over ready-made slopes, so the core has a divider. A serial one is small but each triangle pays about 70 clocks before its first pixel |
+| R2 | Jon chose triangle points over ready-made slopes, so the core has a divider. A serial one is small but each triangle pays about 110 clocks before its first pixel |
 | R3 | The first design's EDGES job (one pixel a row, for a later fill) is gone: TRI fills directly. retro-z80's fast3d demo moves from edges plus a fill to TRI jobs |
 | R5 | Both machines reviewed revision 1 at 6793fd9 and agree; the clip window is now stated as the wrapper's shared registers, and the guide note on long lines is in section 5. retro-z80 may build `TRI` 0 on the KS2 at first, for room |
+| R6 | Size, Yosys for 7-series: 892 LUTs and 383 flip-flops with lines only, 1,825 and 781 with triangles. Not yet trimmed (Jon: simple first); the triangle half has 34-bit edge arithmetic that could narrow |
 | R4 | Filled shapes other than triangles (trapezoids, convex polygons in one job), shading and depth are not in this revision |

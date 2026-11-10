@@ -36,6 +36,8 @@ check layer_pix   "-set PLANAR 0 -set TILES 1"
 check blitter_v1  "-set LE 1 -set XPORT 1 -set PORTJOB 1 -set LINE 1 -set EDGES 1"
 check blitter     "-set LE 1 -set MASKIMG 0"
 check blitter     "-set LE 0 -set MASKIMG 1"
+check raster      "-set LE 1 -set TRI 1"
+check raster      "-set LE 0 -set TRI 0"
 
 if [ $fail -ne 0 ]; then exit 1; fi
 echo "drivers: every register has one driver"
