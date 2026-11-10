@@ -44,7 +44,7 @@ From the layers grilling and the machines' reviews of the spec, 8 November 2026 
 | [0006](layer_fetch/0006-no-restart-on-enable-change.md) | A fetch-enable change does not restart a fetch | accepted |
 | [0007](layer_fetch/0007-settings-per-group.md) | Depth, planar and scale travel with the group | accepted |
 | [0008](layer_fetch/0008-line-end-catch-up.md) | A pointer that started a line always gets its line-end move | superseded by 0009 |
-| [0009](layer_fetch/0009-reset-at-line-end.md) | The pointers are reset at the line end; nothing counts words | proposed |
+| [0009](layer_fetch/0009-reset-at-line-end.md) | The pointers are reset at the line end; nothing counts words | accepted |
 
 ## Sprite fetch (`sprite_fetch/`)
 
