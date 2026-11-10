@@ -394,9 +394,16 @@ module layer_fetch #(
     reg  [NP-1:0] uf;                           // used: read since its last reset or write
     wire [LW-1:0] c_l    = (PLANAR != 0) ? c_q[PIW-1:PIW-LW] : c_q[LW-1:0];
     wire [15:0]   c_mod  = stride[16*c_l +: 16];
-    wire [PW-1:0] c_next = wadd(c_sv, cu_adv[c_l] ? {{(PW-16){c_mod[15]}}, c_mod[15:1], 1'b0} : {PW{1'b0}},
-                                wmask_of(wrap[4*c_l +: 4]));
-    assign        pt_next = wadd(a_pt, {{(PW-2){1'b0}}, 2'd2}, wmask_of(wrap[4*a_pick +: 4]));
+    // One adder for both pointer moves: + 2 for a word read (stage B), or the
+    // line start + stride for a reset (C2). They are never in the same clock:
+    // stage A holds from line_go until the resets are done
+    wire [LW-1:0] ad_l   = c_v ? c_l : a_pick;
+    wire [PW-1:0] ad_a   = c_v ? c_sv : a_pt;
+    wire [PW-1:0] ad_d   = !c_v ? {{(PW-2){1'b0}}, 2'd2}
+                         : cu_adv[c_l] ? {{(PW-16){c_mod[15]}}, c_mod[15:1], 1'b0} : {PW{1'b0}};
+    wire [PW-1:0] ad_y   = wadd(ad_a, ad_d, wmask_of(wrap[4*ad_l +: 4]));
+    wire [PW-1:0] c_next = ad_y;
+    assign        pt_next = ad_y;
     wire          c2_go  = c_v && !ptr_wr;
     wire          c2_wr  = c2_go && uf[c_q];
     wire          c1_go  = cu_act && !ptr_wr && (!c_v || c2_go);
