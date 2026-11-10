@@ -58,5 +58,5 @@ memory              one read a playing channel, two when it interpolates
 - **Reads take exactly one clock.** `rb_q` is right in the clock after `rb_re` and holds until the next read. Your bus must capture it then.
 - **8-bit samples and byte order.** With `LE` 0 the byte at an even address is the word's high byte; with `LE` 1 its low byte. 16-bit samples are the memory's words as they are.
 - **`rate` has no floor.** Give the engine time: about 12 clocks a channel plus its reads (200 clocks is plenty for four channels on a quick memory). A rate too small, or a slow memory, delays samples; none is dropped. 0 means 65 536.
-- **Loops join smoothly.** At a block's last sample the engine interpolates towards the first sample at LC, so write the next block's LC and LEN just after an `ev` and not near the block's end.
+- **Loops join smoothly.** At a block's last sample the engine interpolates towards the first sample at LC, so write the next block's LC and LEN just after an `ev` and not near the block's end. A machine that writes LC a byte at a time has the same reason twice over: an LC half written at the block's last sample joins to a wrong sample for that one output sample (a click, not a fault).
 - **`AW` is at least 16.**
