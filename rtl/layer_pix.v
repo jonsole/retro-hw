@@ -65,6 +65,7 @@ module layer_pix #(
     output reg  [7:0]   idx,
     output reg          pri,           // (TILES) a tile pixel whose entry has PRI set
     output reg  [7:0]   raw,           // the pixel value itself (direct colour)
+    output reg  [3:0]   raw_gs,        // ... and its group's {planar, depth}: depth + 1 bits a pixel
     output reg          overrun_t      // toggles when a group was missing
 );
     // "Full" from the system clock side, through two flip-flops at 5 x the
@@ -146,6 +147,7 @@ module layer_pix #(
             idx    <= deep ? value : {blk, value[3:0]};
             pri    <= tl && ca[4];
             raw    <= (in_win && ok) ? value : 8'd0;
+            raw_gs <= {pl, shg[3:1]};
             if (!primed && ready && avail) begin
                 load;                          // the first group, ahead of the window
                 primed <= 1'b1;

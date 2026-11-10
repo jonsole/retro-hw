@@ -88,19 +88,20 @@ module tb_layer_pix;
 
     wire        op_p, op_t, pri_p, pri_t, ov_p, ov_t;
     wire [7:0]  idx_p, idx_t, raw_p, raw_t;
+    wire [3:0]  rgs_p, rgs_t;
     layer_pix u_planar (
         .clk_pix(clk), .clk_pix5(clk5), .en(en), .hc(hc), .hn(hn), .line_start(line_start), .ready(1'b1),
         .active(active), .xs(xs), .xe(xe), .pos0(pos0),
         .transp(transp), .palofs(palofs), .tile(1'b0),
         .dat(dat_p), .attr(10'd0), .gset(gset_p), .fill_t(fill_p), .take_t(take_p),
-        .opaque(op_p), .idx(idx_p), .pri(pri_p), .raw(raw_p), .overrun_t(ov_p)
+        .opaque(op_p), .idx(idx_p), .pri(pri_p), .raw(raw_p), .raw_gs(rgs_p), .overrun_t(ov_p)
     );
     layer_pix #(.PLANAR(0), .TILES(1)) u_tiles (
         .clk_pix(clk), .clk_pix5(clk5), .en(en), .hc(hc), .hn(hn), .line_start(line_start), .ready(1'b1),
         .active(active), .xs(xs), .xe(xe), .pos0(pos0),
         .transp(transp), .palofs(palofs), .tile(tile),
         .dat(dat_t), .attr(attr), .gset(gset_t), .fill_t(fill_t), .take_t(take_t),
-        .opaque(op_t), .idx(idx_t), .pri(pri_t), .raw(raw_t), .overrun_t(ov_t)
+        .opaque(op_t), .idx(idx_t), .pri(pri_t), .raw(raw_t), .raw_gs(rgs_t), .overrun_t(ov_t)
     );
 
     // ---------------------------------------------------------------- the model
@@ -176,6 +177,8 @@ module tb_layer_pix;
     integer x, k, last_k;
     reg     win, want_op;
     reg [8:0] e;
+    integer g_k, p_k;
+    reg [5:0] gs_k;
     always @(negedge clk) if (en && hc != 0 && hc < LS) begin
         x   = hc - 1;
         k   = x - xs;
@@ -188,6 +191,13 @@ module tb_layer_pix;
             if (op_p !== want_op) fail("planar unit opaque", x, op_p, want_op);
             else if (want_op && idx_p !== e[7:0]) fail("planar unit idx", x, idx_p, e[7:0]);
             if (pri_p !== 1'b0) fail("planar unit pri", x, pri_p, 0);
+            // raw: the pixel value in the window, else 0; raw_gs: its group's
+            // {planar, depth} (bits a pixel - 1), checked with it
+            if (raw_p !== ((win && k < last_k) ? value(k, planar) : 8'd0)) fail("planar unit raw", x, raw_p, (win && k < last_k) ? value(k, planar) : 8'd0);
+            if (win && k < last_k) begin
+                {g_k, p_k} = locate(k);  gs_k = ggset(g_k, planar);
+                if (rgs_p !== {gs_k[0], gs_k[3:1]}) fail("planar unit raw_gs", x, rgs_p, {gs_k[0], gs_k[3:1]});
+            end
             checked = checked + 1;
         end
         if (chk_t) begin
@@ -196,6 +206,11 @@ module tb_layer_pix;
             if (op_t !== want_op) fail("tile unit opaque", x, op_t, want_op);
             else if (want_op && idx_t !== e[7:0]) fail("tile unit idx", x, idx_t, e[7:0]);
             if (want_op && pri_t !== e[8]) fail("tile unit pri", x, pri_t, e[8]);
+            if (raw_t !== ((win && k < last_k) ? value(k, 1'b0) : 8'd0)) fail("tile unit raw", x, raw_t, (win && k < last_k) ? value(k, 1'b0) : 8'd0);
+            if (win && k < last_k) begin
+                {g_k, p_k} = locate(k);  gs_k = ggset(g_k, 1'b0);
+                if (rgs_t !== {1'b0, gs_k[3:1]}) fail("tile unit raw_gs", x, rgs_t, {1'b0, gs_k[3:1]});
+            end
             checked = checked + 1;
         end
     end
