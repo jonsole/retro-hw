@@ -1,6 +1,6 @@
 # Rasteriser (raster)
 
-Status: **draft**, revision 1, reviewed by both machines and built in Vivado by both (PR #14). A new core, from the blitter redesign: it replaces the first blitter's LINE and EDGES jobs. `rtl/raster.v` implements it.
+Status: **locked**, revision 1 (11 November 2026; both machines have ported it, and their own tests and full builds pass against it, with the one-clock step of a line pixel outside the window from PR #18). Changes from here are a revision 2, by request from a machine. Reviewed by both machines and built in Vivado by both (PR #14). A new core, from the blitter redesign: it replaces the first blitter's LINE and EDGES jobs. `rtl/raster.v` implements it.
 
 The rasteriser draws lines and flat-filled triangles into a bitmap in memory, from screen coordinates. A triangle is filled directly, a row at a time, so there is no separate edge pass and fill job. Each pixel is written through the blitter's minterm rule with a constant colour, and clipped to a window. The CPU, or the geometry engine ([geom](geom.md)), supplies the screen coordinates.
 
