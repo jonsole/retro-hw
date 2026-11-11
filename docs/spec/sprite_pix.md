@@ -1,6 +1,6 @@
 # sprite_pix: one sprite's pixel side
 
-Status: **draft**
+Status: **locked**, revision 1 (11 November 2026; both machines build it in Vivado and their own sprite tests give no differences, PR #17): the read pointer leaves as its register (no `rp_g` output), and the span is a set/clear flag, so `hs` must not be after `xe` and must be 16 or more. Changes from here are a revision 2, by request from a machine.
 
 `rtl/sprite_pix.v` draws one sprite in the pixel clock domain. It takes words from the front of the sprite's FIFO, which `sprite_fetch.v` fills from memory in the system clock domain, and gives a pixel each clock: opaque or not, and its colour index. A machine builds one per sprite.
 
