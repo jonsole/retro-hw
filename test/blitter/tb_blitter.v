@@ -107,6 +107,7 @@ module tb_blitter;
         if (mem_req && mem_ack) begin
             if (mem_we) begin
                 n_wr = n_wr + 1;
+                if ((mem_be[0] && ^mem_wdata[7:0] === 1'bx) || (mem_be[1] && ^mem_wdata[15:8] === 1'bx)) fail("unknown bits written", ea, mem_wdata);
                 // even byte: bits 15-8 big-endian (be[1]), bits 7-0 little-endian (be[0])
                 if (LE != 0) begin
                     if (mem_be[0]) begin dm[ea] = mem_wdata[7:0];       if (!al[ea])          begin n_bad_wr = n_bad_wr + 1; fail("write outside the job", ea, mem_wdata); end end
@@ -281,6 +282,8 @@ module tb_blitter;
         repeat (4) @(negedge clk);
         rst = 1'b0;
 
+        // ---- the first job after reset never reads C (a word-aligned 8-bit fill): no unknown bits may be written
+        set_job(8'hCC, 0, 3, 0, 1, 0, 16'h0707, 0, 32, 2, 0, 0, 0, 0, 0, 0, 24'h001000, 0, 64, 0);  run;
         // ---- random jobs, fast memory then slow
         for (t = 0; t < 3000; t = t + 1) random_job;
         slow = 1;

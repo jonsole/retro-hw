@@ -165,7 +165,7 @@ Row 9, the bottom point's, is not drawn: a triangle below sharing that point or 
 
 The descriptor load and set-up are the blitter's (4.10). Then:
 
-- **LINE.** About 16 clocks to find the first row's address, then one clock a pixel stepped. A pixel inside the window is one write (after one read, where 4.1 says); the stepping waits for it.
+- **LINE.** About 16 clocks to find the first row's address, then one clock for each pixel outside the window. A pixel inside the window is one write (after one read, where 4.1 says) and then one clock to step on.
 - **TRI.** The sort and the three divides, one after another on the one divider, about 110 clocks. Then each row: four clocks (the edges' ceilings, the span cut to the window, the draw decision, the step), and the span's words, one write each (after one read where needed). A row outside the window, or with an empty span, costs its four clocks.
 - `stop` is taken between pixels (LINE) or rows (TRI).
 

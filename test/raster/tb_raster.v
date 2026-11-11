@@ -108,6 +108,7 @@ module tb_raster;
         if (mem_req && mem_ack) begin
             if (mem_we) begin
                 n_wr = n_wr + 1;
+                if ((mem_be[0] && ^mem_wdata[7:0] === 1'bx) || (mem_be[1] && ^mem_wdata[15:8] === 1'bx)) fail("unknown bits written", ea, mem_wdata);
                 if (LE != 0) begin
                     if (mem_be[0]) wbyte(ea, mem_wdata[7:0]);
                     if (mem_be[1]) wbyte(ea + 17'd1, mem_wdata[15:8]);

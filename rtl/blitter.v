@@ -229,6 +229,8 @@ module blitter #(
             da <= {(AW+1){1'b0}};
             mem_req <= 1'b0;  mem_we <= 1'b0;  mem_be <= 2'b11;
             x_b <= 1'b0;  x_c <= 1'b0;  q_b <= 1'b0;  q_c <= 1'b0;
+            // (so a first job that reads no C, B or mask writes no unknowns in simulation)
+            creg <= 16'd0;  bprev <= 16'd0;  bcur <= 16'd0;  areg <= 32'd0;
             su_i <= 3'd0;  dl_i <= 3'd0;  w_up <= 1'b0;  dlc <= 4'd0;  dl_got <= 2'd0;
         end else begin
             if (stop && busy) stop_p <= 1'b1;

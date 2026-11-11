@@ -208,6 +208,27 @@ module raster #(
         end
     endtask
 
+    // LINE: on to the next pixel (or the end)
+    task line_step;
+        begin
+            if (l_last) st <= S_END;
+            else begin
+                l_left <= l_left - 1'b1;
+                l_pat  <= {l_pat[14:0], l_pat[15]};
+                if (l_e1[17]) begin                               // the shorter axis steps too
+                    l_err <= l_e1 + {1'b0, l_major};
+                    if (l_xmaj) begin ly <= l_syn ? ly - 1'b1 : ly + 1'b1;  cy <= l_syn ? cy - 1'b1 : cy + 1'b1;
+                                      rowb <= l_syn ? rowb - sx_d : rowb + sx_d; end
+                    else              lx <= l_sxn ? lx - 1'b1 : lx + 1'b1;
+                end else l_err <= l_e1;
+                if (l_xmaj) lx <= l_sxn ? lx - 1'b1 : lx + 1'b1;
+                else begin        ly <= l_syn ? ly - 1'b1 : ly + 1'b1;  cy <= l_syn ? cy - 1'b1 : cy + 1'b1;
+                                  rowb <= l_syn ? rowb - sx_d : rowb + sx_d; end
+                st <= S_LP;
+            end
+        end
+    endtask
+
     always @(posedge clk) begin
         done <= 1'b0;
         dl_v <= 1'b0;
@@ -217,6 +238,7 @@ module raster #(
             da <= {(AW+1){1'b0}};
             mem_req <= 1'b0;  mem_we <= 1'b0;  mem_be <= 2'b11;
             su_i <= 3'd0;  dl_i <= 3'd0;  w_up <= 1'b0;  dlc <= 4'd0;  dl_got <= 2'd0;
+            creg <= 16'd0;      // (so a first job that never reads C writes no unknowns in simulation)
         end else begin
             if (stop && busy) stop_p <= 1'b1;
             case (st)
@@ -291,25 +313,9 @@ module raster #(
             S_LP: begin
                 if (stop_p) finish(1'b0);
                 else if (l_plot) span(lx, 17'd1, l_pat[15], S_LS);
-                else st <= S_LS;
+                else line_step;                       // a pixel outside the window: stepped in this same clock
             end
-            S_LS: begin
-                if (l_last) st <= S_END;
-                else begin
-                    l_left <= l_left - 1'b1;
-                    l_pat  <= {l_pat[14:0], l_pat[15]};
-                    if (l_e1[17]) begin                               // the shorter axis steps too
-                        l_err <= l_e1 + {1'b0, l_major};
-                        if (l_xmaj) begin ly <= l_syn ? ly - 1'b1 : ly + 1'b1;  cy <= l_syn ? cy - 1'b1 : cy + 1'b1;
-                                          rowb <= l_syn ? rowb - sx_d : rowb + sx_d; end
-                        else              lx <= l_sxn ? lx - 1'b1 : lx + 1'b1;
-                    end else l_err <= l_e1;
-                    if (l_xmaj) lx <= l_sxn ? lx - 1'b1 : lx + 1'b1;
-                    else begin        ly <= l_syn ? ly - 1'b1 : ly + 1'b1;  cy <= l_syn ? cy - 1'b1 : cy + 1'b1;
-                                      rowb <= l_syn ? rowb - sx_d : rowb + sx_d; end
-                    st <= S_LP;
-                end
-            end
+            S_LS: line_step;
 
             // TRI: sort the points by y (three compare-and-swaps)
             S_SRT: if (TRI != 0) begin
