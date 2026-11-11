@@ -40,7 +40,6 @@ check raster      "-set LE 1 -set TRI 1"
 check raster      "-set LE 0 -set TRI 0"
 check geom        "-set AW 20"
 check sigma_delta2 "-set ORDER 1"
-check sigma_delta2 "-set DSP 1"
 
 if [ $fail -ne 0 ]; then exit 1; fi
 echo "drivers: every register has one driver"

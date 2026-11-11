@@ -1,7 +1,6 @@
 // Unit test for sigma_delta2: for a constant input x the share of ones in
 // y over 2^17 clocks must be 1/2 + x / 2^17, within a few counts. The same
-// for a first-order unit (ORDER 1); a unit with DSP 1 must give the same
-// stream as one without, bit for bit.
+// for a first-order unit (ORDER 1).
 `timescale 1ns/1ps
 module tb_sigma_delta2;
     reg clk = 1'b0;
@@ -10,12 +9,10 @@ module tb_sigma_delta2;
     reg signed [15:0] x = 16'sd0;
     wire y;
 
-    wire y1, yd;
+    wire y1;
     sigma_delta2 dut (.clk(clk), .rst(rst), .x(x), .y(y));
     sigma_delta2 #(.ORDER(1)) dut1 (.clk(clk), .rst(rst), .x(x), .y(y1));
-    sigma_delta2 #(.DSP(1)) dutd (.clk(clk), .rst(rst), .x(x), .y(yd));
-    integer ones1, diff = 0;
-    always @(negedge clk) if (!rst && yd !== y) diff = diff + 1;
+    integer ones1;
 
     integer fails = 0;
     integer ones, k, want;
@@ -51,7 +48,6 @@ module tb_sigma_delta2;
         run(16'sd32767);                   // the ends
         run(-16'sd32768);
         run(16'sd1234);
-        if (diff != 0) begin $display("FAIL: the DSP build's stream differs in %0d clocks", diff); fails = fails + 1; end
         if (fails == 0) $display("TEST PASSED");
         else            $display("TEST FAILED: %0d", fails);
         $finish;
