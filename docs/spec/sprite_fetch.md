@@ -63,7 +63,7 @@ All ports are in the system clock domain unless the table says otherwise. A stro
 | `fifo_ra` | in | 8 × 5 | Pixel side: read addresses | Pixel clock |
 | `fifo_rd` | out | 8 × 16 | The words there (asynchronous read) | |
 | `wp_g` | out | 8 × 6 | Write pointers, Gray-coded, straight from registers | System clock; synchronise on the pixel side |
-| `rp` | in | 8 × 6 | Read pointers, binary, straight from `sprite_pix`'s registers | Pixel clock; synchronised here (2 flops), and a value is used only when two successive samples agree, because a read pointer can move several words in one step. The pixel clock must be at most a third of the system clock |
+| `rp` | in | 8 × 6 | Read pointers, binary, straight from `sprite_pix`'s registers | Pixel clock; synchronised here (2 flops), and a value is used only when two successive samples agree, because a read pointer can move several words in one step. The pixel clock must be at most a third of the system clock, and the skew between a pointer's bits on their way across well under one system clock (true of any sane placement; a machine may bound it with a max delay) |
 | `flush_t` | out | 8 | Toggles: the sprite's FIFO was emptied | |
 | `flush_ack_t` | in | 8 | Toggles back: the pixel side has emptied its end | Pixel clock; synchronised here |
 | `coll_line` | in | 32 | Collisions found on a line | Steady from before `coll_t` toggles until the next toggle |

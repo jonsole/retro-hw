@@ -52,8 +52,9 @@ module sprite_pix (
         end
     endfunction
 
-    reg [5:0] wg1, wg2;
-    reg [1:0] fl_s;
+    // (synchronisers from the 100 MHz side: kept together by the tools)
+    (* ASYNC_REG = "TRUE" *) reg [5:0] wg1, wg2;
+    (* ASYNC_REG = "TRUE" *) reg [1:0] fl_s;
     always @(posedge clk_pix) begin
         wg1  <= wp_g;
         wg2  <= wg1;
