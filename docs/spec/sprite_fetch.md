@@ -1,6 +1,6 @@
 # sprite_fetch: the sprites' memory side
 
-Status: **draft**
+Status: **locked**, revision 1 (11 November 2026; both machines build it in Vivado and their own sprite tests give no differences, PR #17): the FIFO pointers cross the clocks from registers, with a read pointer used only when two samples agree (the `rp` input, in place of `rp_g`); a hand-fed word is held one-deep; the scheduler side as `layer_fetch`'s. Changes from here are a revision 2, by request from a machine.
 
 `rtl/sprite_fetch.v` fetches the image words of up to eight sprites from memory, a line at a time, into a 32-word FIFO per sprite. The pixel units (`sprite_pix.v`, one per sprite) take the words from the other end of each FIFO in the pixel clock domain. The core also works out each sprite's line settings for the pixel side, the deadlines for the memory scheduler, and gathers the sprite collisions.
 
