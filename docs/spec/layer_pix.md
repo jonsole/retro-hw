@@ -1,6 +1,6 @@
 # Layer pixel unit (layer_pix)
 
-Status: **locked**, revision 5 (10 November 2026; agreed by both machines, PR #12): a new output, `raw_gs`, gives the planar flag and depth of the group each `raw` pixel came from, so a machine widening `raw` for direct colour follows a mid-line depth change (retro68k's request). Revision 4 (with `layer_fetch` revision 4): only the note on a mid-line scale change (4.3) changed. Revision 2 (locked 9 November 2026, PR #9): a group's depth, planar flag and scale travel with the group (`gset`) instead of being line settings. Changes from here are a revision 6, by request from a machine.
+Status: **draft**, revision 6, by retro68k's request (its size review, H), not yet agreed by both machines: the window is kept as a flag set at `xs` and cleared at `xe`, so `xs` must not be after `xe` and `xe` not after the line's end (section 2, `xs`, `xe`); nothing else changes, and a machine that already keeps to that sees the same pixels. Revision 5 (locked 10 November 2026; agreed by both machines, PR #12): a new output, `raw_gs`, gives the planar flag and depth of the group each `raw` pixel came from, so a machine widening `raw` for direct colour follows a mid-line depth change (retro68k's request). Revision 4 (with `layer_fetch` revision 4): only the note on a mid-line scale change (4.3) changed. Revision 2 (locked 9 November 2026, PR #9): a group's depth, planar flag and scale travel with the group (`gset`) instead of being line settings. 
 
 One layer's pixel side. It takes the layer's 16-pixel groups from its data registers (filled by the machine's layer fetch on the system clock), shows them pixel by pixel in the layer's window, with fine scroll and horizontal scaling, and gives a colour index per pixel to the priority stage. Groups cross from the system clock to the pixel clock under a full / taken handshake of toggles. A group that is not there in time makes the layer transparent for that group (overrun).
 
@@ -27,12 +27,12 @@ One layer's pixel side. It takes the layer's 16-pixel groups from its data regis
 | `clk_pix` | in | 1 | Pixel clock | – |
 | `clk_pix5` | in | 1 | 5 × `clk_pix`, rising edges lined up with it | – |
 | `en` | in | 1 | Video on. Low: nothing shown, the handshake emptied, overrun cleared | `clk_pix` |
-| `hc` | in | 11 | The beam's pixel in the line (0 the first visible pixel) | `clk_pix` |
+| `hc` | in | 11 | The beam's pixel in the line (0 the first visible pixel). Not used by the core since revision 6; kept so the port list is the same | `clk_pix` |
 | `hn` | in | 11 | The next pixel's position (`hc` + 1, or 0 after the last) | With `hc` |
 | `line_start` | in | 1 | One clock at the start of the horizontal blank: the line's setup starts | `clk_pix` |
 | `ready` | in | 1 | The data registers hold this line's data (the fetch has restarted for it) | `clk_pix`, any delay |
 | `active` | in | 1 | The layer shows on this line | Stable through the line |
-| `xs`, `xe` | in | 11, 11 | The window: pixels `xs` to `xe` − 1 | Stable through the line |
+| `xs`, `xe` | in | 11, 11 | The window: pixels `xs` to `xe` − 1. `xs` ≤ `xe`, and `xe` at most the number of pixels `hn` counts in a line: the window opens in the clock `hn` = `xs` and closes in the clock `hn` = `xe`, so a window whose end `hn` never reaches stays open until `line_start`, which also closes it. With `xs` = `xe` the close wins: an empty window, at any position | Stable through the line |
 | `pos0` | in | 4 | The first source pixel shown in the first group (fine scroll) | Stable through the line |
 | `transp` | in | 1 | Colour value 0 is transparent | Live: applies from the next pixel. A raw crossing from the machine's clock (4.4) |
 | `palofs` | in | 4 | Palette offset: the top 4 bits of the index for a pixel of up to 4 bits | Live: applies from the next pixel. A raw crossing from the machine's clock (4.4) |

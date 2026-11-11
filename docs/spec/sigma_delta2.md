@@ -8,14 +8,14 @@ Status: **draft**
 
 | Item | Value |
 |------|-------|
-| Order | Second |
+| Order | Second; first with `ORDER` 1 |
 | Input | 16 bits signed, taken every clock |
 | Output | 1 bit, registered, one per clock |
 | Scale | The feedback is ±2^16, twice the input's full scale, so the loop is stable for every input |
 | Average of the output | 1/2 + x / 2^17: from 1/4 (x = −32 768) to just under 3/4 (x = 32 767) |
-| Internal state | Two 24-bit signed integrators |
+| Internal state | Two 24-bit signed integrators (one with `ORDER` 1) |
 | Clock | Any; one domain |
-| Parameters | None |
+| Parameters | `ORDER` |
 
 ## 2. Ports
 
@@ -28,7 +28,11 @@ Status: **draft**
 
 ## 3. Parameters
 
-None. The width (16 bits in, 24-bit integrators, feedback ±65 536) is fixed. A machine drives it at its system clock (for example 100 MHz).
+| Name | Default | Meaning |
+|------|---------|---------|
+| `ORDER` | 2 | 1: a first-order modulator: `y` is 1 when the new `i1` is 0 or more, and there is no `i2`. About a quarter of the size, with more noise left in the audio band: for an output where quality matters less (a small internal speaker). The average of the output is the same |
+
+The width (16 bits in, 24-bit integrators, feedback ±65 536) is fixed. A machine drives it at its system clock (for example 100 MHz).
 
 ## 4. Behaviour
 
@@ -59,7 +63,7 @@ At every edge (not in reset), with `fb` = +65 536 when `y` is 1 and −65 536 wh
 | Check | How |
 |-------|-----|
 | After reset | `y` is 0 or 1, not unknown |
-| Pulse density | For x = 0, ±8 192, 32 767, −32 768 and 1 234: after 4 096 clocks to settle, the ones in 2^17 clocks are 65 536 + x, within 4 |
+| Pulse density | For x = 0, ±8 192, 32 767, −32 768 and 1 234: after 4 096 clocks to settle, the ones in 2^17 clocks are 65 536 + x, within 4. The same for a unit with `ORDER` 1 |
 
 A machine's audio test checks its streams at its own levels (for example a beeper at a quarter of full scale).
 

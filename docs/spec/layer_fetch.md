@@ -1,6 +1,6 @@
 # Layer fetch (layer_fetch)
 
-Status: **locked**, revision 4 (10 November 2026; agreed and built in Vivado by both machines, PR #11): a pointer just counts on with each word read, and at each `line_go` every pointer read from since its last reset or write is reset to its line start + `stride` (4.3). No word counting, no last-word move, no catch-up; a pointer written after its last read (a split screen) starts the next line as written. Revision 3 (locked 9 November 2026, PR #10) did the same move at the line's last word and caught up the short lines at `line_go`; Jon asked for the simpler rule. Revision 2: a group's depth, planar flag and scale are taken at the group's start and travel with it to `layer_pix` (`gset`). Changes from here are a revision 5, by request from a machine.
+Status: revision 4 **locked**, with one addition since, for both machines to agree: a `DATREAD` parameter (default 1: as before) to leave out the data registers' read-back, by retro68k's request (its size review, C: about 110 LUTs there). Revision 4 (10 November 2026; agreed and built in Vivado by both machines, PR #11): a pointer just counts on with each word read, and at each `line_go` every pointer read from since its last reset or write is reset to its line start + `stride` (4.3). No word counting, no last-word move, no catch-up; a pointer written after its last read (a split screen) starts the next line as written. Revision 3 (locked 9 November 2026, PR #10) did the same move at the line's last word and caught up the short lines at `line_go`; Jon asked for the simpler rule. Revision 2: a group's depth, planar flag and scale are taken at the group's start and travel with it to `layer_pix` (`gset`). Changes from here are a revision 5, by request from a machine.
 
 The layer fetch reads each layer's words from memory, one 16-pixel group at a time, into the layer's data registers, where `layer_pix.v` takes them. It is one requester on the memory scheduler (`dmac.v`) for all its layers, and picks which layer asks next by earliest deadline. It counts each layer's pointer on as it reads, and moves it to the next line's start at the end of a line.
 
@@ -62,7 +62,7 @@ Settings are read at one of three times:
 | `dat_sel` | in | LW+3 | `DATWRITE`: {layer, data register} | With `dat_wr` |
 | `dat_wdata`, `dat_be` | in | 16, 2 | `DATWRITE`: the data, and its byte enables (bit 1 the upper byte) | With `dat_wr` |
 | `dma_en` | in | 8×NL | `DATWRITE`: bit p: the fetch fills data register p of the layer. Chunky: bit 0 for the whole layer. Without `DATWRITE` every register is filled | Read live: a group uses the enables registered the clock before it starts (4.6) |
-| `dat_rdata` | out | 16 | `DATWRITE`: the data register `dat_sel` names | Combinational from `dat_sel` |
+| `dat_rdata` | out | 16 | `DATWRITE` and `DATREAD`: the data register `dat_sel` names. Otherwise 0 | Combinational from `dat_sel` |
 | `dat` | out | 128×NL | The data registers to `layer_pix`: layer n register r in bits 128n + 16r to 128n + 16r + 15 | Stable while the layer is full |
 | `attr` | out | 10×NL | `TILES`: the group's {PRI, PAL} for tile column 1 (bits 9–5) and column 0 (bits 4–0) | With `dat` |
 | `gset` | out | 6×NL | The group's settings for `layer_pix`, as taken at its start: bit 0 `planar`, bits 3–1 `depth`, bits 5–4 `hscale` (`layer_pix` spec, section 2) | With `dat` |
@@ -84,6 +84,7 @@ Settings are read at one of three times:
 | `PLANAR` | 1 | Planar layers: a pointer per plane, `planar` used | 1 | 0 |
 | `TILES` | 0 | Tile layers: `tile`, `mapw`, `ty`, `tcol`, `mappt`, `patpt` used, `attr` driven | 0 | 1 |
 | `DATWRITE` | 0 | Data-register writes and per-register fetch enables: `dat_*`, `dma_en` used | 1 | 0 |
+| `DATREAD` | 1 | With `DATWRITE`: 1 builds `dat_rdata`; 0 leaves the read-back out (a 16-bit mux over every data register) | 1 until its register table changes | not used |
 | `LITTLE` | 0 | Memory byte order. 1: the even byte of a word is its low byte, and holds the pixels further left, so the fetch swaps a word's bytes into the data register | 0 | 1 |
 | `URG_BASE` | 15 | Urgent mark: clocks, before any words still to come (4.4) | 15 | 17 |
 | `URG_WORD` | 5 | Urgent mark: clocks per word still to come | 5 | 5 |
