@@ -108,7 +108,6 @@ module copper_engine #(
     // Fetch: a buffer of up to three words, and at most one word on its way
     reg  [15:0] b0, b1, b2;
     reg  [1:0]  bn;
-    reg  [AW:1] fpc;                   // next word to fetch
     reg         outst;                 // a word is on its way (acked, data not back)
     reg         stale;                 // ... and it is to be dropped
 
@@ -180,7 +179,6 @@ module copper_engine #(
             npc <= {AW{1'b0}}; xpc <= {AW{1'b0}};
             in2 <= 1'b0;
             bn <= 2'd0;
-            fpc <= {AW{1'b0}};
             mem_req <= 1'b0;
             outst <= 1'b0;
             stale <= 1'b0;
@@ -289,15 +287,15 @@ module copper_engine #(
             end
             if (flush) begin
                 bn   <= 2'd0;
-                fpc  <= f_to;
                 npc  <= f_to;
                 // A word asked for or on its way is dropped when it comes
                 if (mem_req || mem_ack || (outst && !mem_rvalid)) stale <= 1'b1;
             end else if (!mem_req && !outst && !mem_ack && !mem_rvalid && !stale
                          && xs != X_OFF && (bn < 2'd2 || bn < need)) begin
                 mem_req  <= 1'b1;
-                mem_addr <= fpc;
-                fpc      <= fpc + 1'b1;
+                // The next word to fetch is the one after those held: with
+                // nothing asked for or on its way, that is npc + bn
+                mem_addr <= npc + {{(AW-2){1'b0}}, bn};
             end
 
             if (stack_clear) sp <= 4'd0;

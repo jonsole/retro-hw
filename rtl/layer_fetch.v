@@ -198,7 +198,10 @@ module layer_fetch #(
             assign attr[10*g +: 10] = (TILES != 0) ? at[g] : 10'd0;
         end
     endgenerate
-    assign dat_rdata = (DATWRITE != 0) ? dr[dat_sel] : 16'd0;
+    // Only the 8 x NL registers there are: the index is padded to a power of
+    // two, and a register number past the last layer's must build nothing
+    wire          ds_ok = ({{(29-LW){1'b0}}, dat_sel} < 8 * NL);
+    assign dat_rdata = ((DATWRITE != 0) && ds_ok) ? dr[dat_sel] : 16'd0;
 
     // ---------------------------------------------------------------- line state
     reg  [11:0]   left [0:NL-1];               // groups still to start
@@ -293,22 +296,12 @@ module layer_fetch #(
             end
         end
     end
-    // The slot to fill next, worked out for every layer so the pick only selects
-    reg           gs_l [0:NL-1];
-    reg  [9:0]    gm_l [0:NL-1], rn_l [0:NL-1];
-    reg  [3:0]    sl_l [0:NL-1];
-    always @(*) begin
-        for (n = 0; n < NL; n = n + 1) begin
-            gs_l[n] = (rem[n] == 10'd0);                            // a new group
-            gm_l[n] = gs_l[n] ? gmask_l[n] : rem[n];
-            sl_l[n] = top(gm_l[n]);
-            rn_l[n] = gm_l[n] & ~(10'd1 << sl_l[n]);
-        end
-    end
-    wire          gstart  = gs_l[pick];
-    wire [9:0]    gmask   = gm_l[pick];
-    wire [3:0]    sl_n    = sl_l[pick];
-    wire [9:0]    rem_n   = rn_l[pick];
+    // The slot to fill next, worked out once, for the layer picked
+    wire [9:0]    rem_p   = rem[pick];
+    wire          gstart  = (rem_p == 10'd0);                       // a new group
+    wire [9:0]    gmask   = gstart ? gmask_l[pick] : rem_p;
+    wire [3:0]    sl_n    = top(gmask);
+    wire [9:0]    rem_n   = gmask & ~(10'd1 << sl_n);
     wire [2:0]    pl_n    = sl_n[2:0] - 3'd2;                       // the data register (slots 9-2)
     wire          perpl   = (PLANAR != 0) && e_pl[pick];            // a pointer a plane
     wire [PIW-1:0] pi;                                               // the pointer the pick reads
@@ -381,7 +374,7 @@ module layer_fetch #(
                             && (!a_gstart || left[a_pick] != 12'd0);
     wire          a_tile  = (TILES != 0) && t_tile[a_pick];
     wire          a_ent   = (TILES != 0) && (a_slot < 4'd2);
-    wire [PW-1:0] pt_next = wadd(a_pt, {{(PW-2){1'b0}}, 2'd2}, wmask_of(wrap[4*a_pick +: 4]));
+    wire [PW-1:0] pt_next;                                          // a_pt + 2 (the shared adder, below)
     wire [PW-1:0] prow    = pn[{a_pick, a_col}];
     wire [PW-1:0] b_addr  = !a_tile ? a_pt : a_ent ? eaddr[a_pick] : prow + {{(PW-4){1'b0}}, a_j, 1'b0};
     wire          b_bsel  = prow[0];
@@ -401,8 +394,16 @@ module layer_fetch #(
     reg  [NP-1:0] uf;                           // used: read since its last reset or write
     wire [LW-1:0] c_l    = (PLANAR != 0) ? c_q[PIW-1:PIW-LW] : c_q[LW-1:0];
     wire [15:0]   c_mod  = stride[16*c_l +: 16];
-    wire [PW-1:0] c_next = wadd(c_sv, cu_adv[c_l] ? {{(PW-16){c_mod[15]}}, c_mod[15:1], 1'b0} : {PW{1'b0}},
-                                wmask_of(wrap[4*c_l +: 4]));
+    // One adder for both pointer moves: + 2 for a word read (stage B), or the
+    // line start + stride for a reset (C2). They are never in the same clock:
+    // stage A holds from line_go until the resets are done
+    wire [LW-1:0] ad_l   = c_v ? c_l : a_pick;
+    wire [PW-1:0] ad_a   = c_v ? c_sv : a_pt;
+    wire [PW-1:0] ad_d   = !c_v ? {{(PW-2){1'b0}}, 2'd2}
+                         : cu_adv[c_l] ? {{(PW-16){c_mod[15]}}, c_mod[15:1], 1'b0} : {PW{1'b0}};
+    wire [PW-1:0] ad_y   = wadd(ad_a, ad_d, wmask_of(wrap[4*ad_l +: 4]));
+    wire [PW-1:0] c_next = ad_y;
+    assign        pt_next = ad_y;
     wire          c2_go  = c_v && !ptr_wr;
     wire          c2_wr  = c2_go && uf[c_q];
     wire          c1_go  = cu_act && !ptr_wr && (!c_v || c2_go);
@@ -511,6 +512,7 @@ module layer_fetch #(
 
     // DATWRITE: nothing of the layer is fetched (judged live), so a write of
     // register 0's low byte completes the group
+    wire          r_lok    = ({{(32-LW){1'b0}}, r_layer} < NL);     // (always: says so to synthesis)
     wire [LW-1:0] dw_layer = dat_sel[LW+2:3];
     wire          dw_fills = (DATWRITE != 0) && dat_wr && dat_sel[2:0] == 3'd0 && dat_be[0]
                              && !(enable && en_l[dw_layer] != 8'd0);
@@ -568,11 +570,11 @@ module layer_fetch #(
             // Data back from the memory
             if (rvalid) begin
                 if (r_ent)  ent[{r_layer, !r_slot[0]}] <= rdata;                      // an entry, as read
-                if (r_b1) begin                                                        // 1-bit tiles: the row's byte
+                if (r_b1 && r_lok) begin                                               // 1-bit tiles: the row's byte
                     if (r_slot[0]) dr[{r_layer, 3'd0}][15:8] <= r_byte;               // column 0 high
                     else           dr[{r_layer, 3'd0}][7:0]  <= r_byte;
                 end
-                if (r_wr)   dr[r_reg] <= r_word;
+                if (r_wr && r_lok) dr[r_reg] <= r_word;
                 if (r_ok && q_fill[q_h]) fill_t[r_layer] <= ~fill_t[r_layer];
                 if (r_ok && q_last[q_h]) busy[r_layer]   <= 1'b0;
                 q_h <= q_h + 1'b1;
@@ -654,7 +656,7 @@ module layer_fetch #(
 
             // DATWRITE: a write into a data register wins, byte by byte, over
             // a word arriving for it in the same clock
-            if ((DATWRITE != 0) && dat_wr) begin
+            if ((DATWRITE != 0) && dat_wr && ds_ok) begin
                 if (dat_be[1]) dr[dat_sel][15:8] <= dat_wdata[15:8];
                 if (dat_be[0]) dr[dat_sel][7:0]  <= dat_wdata[7:0];
                 if (dw_fills) fill_t[dw_layer] <= ~take_s2[dw_layer];
