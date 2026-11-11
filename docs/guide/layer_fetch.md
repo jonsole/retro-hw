@@ -92,6 +92,7 @@ A request is urgent when its layer's deadline is under `URG_BASE` + `URG_WORD` Ã
 
 ## Pitfalls
 
+- **Data-register writes land a clock or more later.** With `DATWRITE`, a `dat_wr` is held and stored on the first clock with no fetched word. One write waits at a time: a second `dat_wr` before the first is stored replaces it silently. Don't let two writers (a CPU and a copper) write data registers at the same time while a layer is being fetched.
 - **Load the pointers before use.** Reset leaves them as they are.
 - **Settings copied at the line start must be ready before `line_go`,** two clocks after `line_t` toggles. Work them out in the blank.
 - **Live settings change at once.** A stride written any time before a pointer's reset applies at that line's end; wrap on the next pointer move. That is deliberate, for copper effects.
