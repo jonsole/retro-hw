@@ -52,7 +52,7 @@ Six fields a channel, held in the core.
 | `set_be` | in | 3 | Which bytes of the field are written: bit 0 is bits 7–0, bit 1 bits 15–8, bit 2 bits 23–16 | With `set_we` |
 | `rb_re` | in | 1 | With `RDBACK`: read field `rb_f` of channel `rb_ch` | Strobe |
 | `rb_ch`, `rb_f` | in | 2, 3 | The channel and field to read | With `rb_re` |
-| `rb_q` | out | 24 | With `RDBACK`: that field, unused bits 0, in the clock after `rb_re` exactly, and held until the next read. Without: 0 | Register |
+| `rb_q` | out | 24 | With `RDBACK`: that field, unused bits 0, in the clock after `rb_re` exactly, and held until the next read or `rst`, which clears it. Without: 0 | Register |
 
 | Field | Name | Bits | Meaning |
 |-------|------|------|---------|
@@ -189,11 +189,11 @@ Each output sample takes about 12 clocks a playing channel besides its reads. Wi
 
 ### 4.8 Sequence
 
-`ev` for a start strobes in the clock after the engine begins the channel; `ev` for a block's end in the clock after the channel's position moves. `out_v` strobes once per output sample, after the last channel. `on` changes in the clock of the `stop`, or with the `ev`.
+`ev` for a start strobes in the clock after the engine begins the channel; `ev` for a block's end in the clock after the channel's position moves. `out_v` strobes once per output sample, after the last channel. `on` is a register: it falls in the clock after a `stop`, and otherwise changes with the `ev`.
 
 ### 4.9 Reset and the settings
 
-`rst` stops every channel, forgets waiting starts, drops any request and clears the output. The channel settings are kept in a small RAM and are not reset: after configuration they are CTRL 0, LC 0, LEN 0, STEP 0x10000, VOL 0 and POS 0, and after a later reset whatever was last written. Software writes a channel's settings before it starts it.
+`rst` stops every channel, forgets waiting starts, drops any request and clears the output and `rb_q`. A word that comes back for a read asked before the reset is ignored, unless a new read has been asked by then: reset the scheduler with the core. The channel settings are kept in a small RAM and are not reset: after configuration they are CTRL 0, LC 0, LEN 0, STEP 0x10000, VOL 0 and POS 0, and after a later reset whatever was last written. Software writes a channel's settings before it starts it.
 
 ## 5. How a machine uses it
 
@@ -229,4 +229,5 @@ Each output sample takes about 12 clocks a playing channel besides its reads. Wi
 | U8 | From the machines' review of revision 1: settings taken once a channel a sample; a one-clock registered read (both buses answer a clock after the strobe); one exact rule for a stop during the engine's work, the simplest to build, not retro68k's; the second read only when needed; a late engine delays the sample; the note on writing LC and LEN |
 | U9 | retro68k's spec 6 gives reset values for VOL and STEP; with this core its start-up code writes them. Jon's call for retro68k |
 | U11 | Jon's decisions for revision 3: interpolation across block ends, always; `rate` with no floor, 0 meaning 65 536; no loop registers, no gain input or limiter, no volume smoothing, 4.16 steps, one `ev` a channel, plain reads with no cache or urgent mark; a start restarts a playing channel; enables stay in the wrapper; `out_l`, `out_r` and `out_v` are the hook for a later HDMI audio block; the spec locks at merge |
+| U12 | From the first Vivado gates (376c378): the move-on step read the position, added the step, compared and wrote back in one clock, which missed 100 MHz on the KS2's part, and the two sums were each built into a DSP block of their own. Now the sums for the move are made in the clocks of the volume multiplies, the second sample's address a clock after the first's, and the left and right sums are kept out of the multiplier's block. No behaviour changes |
 | U10 | Size (of revision 2; revision 3 adds one address choice, about 18 cells), Yosys for 7-series (logic cells; besides them 35 RAM32M, about 140 LUTs, and one DSP block in every build): defaults 436 and 332 flip-flops; `RDBACK` 0: 384; `INTERP` 0: 327; `NCH` 2: 425; `NCH` 2 with `INTERP` 0 and `RDBACK` 0: 243. Vivado figures from the machines' gates to come. retro68k's unit is 1,228 LUTs in Vivado |

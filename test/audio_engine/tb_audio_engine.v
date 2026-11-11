@@ -108,7 +108,7 @@ module tb_audio_engine;
         vol = (v > 7'd64) ? 64 : v;
     endfunction
 
-    localparam E_IDLE = 4'd0, E_CH = 4'd1, E_GO = 4'd2, E_ADV = 4'd12, E_OUT = 4'd13;
+    localparam E_IDLE = 4'd0, E_CH = 4'd1, E_G2 = 4'd14, E_ADV = 4'd12, E_OUT = 4'd13;
     wire stall = (RDBACK != 0) && rb_re;
 
     integer        n, last_begin = -1, last_rate = 0;
@@ -153,7 +153,7 @@ module tb_audio_engine;
                     end
                     m_run = tk ? (b_len[n] != 0) : (m_on[n] && !stop[n]);
                 end
-                E_GO: if (!m_run) fail("ran a stopped", 1, 0); else begin
+                E_G2: if (!m_run) fail("ran a stopped", 1, 0); else begin
                         i0 = m_pos[n][BW+15:16];
                         fr = m_pos[n][15:0];
                         i1 = (((i0 + 1'b1) & BM) < b_len[n]) ? i0 + 1'b1 : i0;
@@ -225,7 +225,7 @@ module tb_audio_engine;
         end
         // 3. starts and stops (a stop wins)
         for (n = 0; n < NCH; n = n + 1) begin
-            if (stop[n] && dut.es > E_CH && dut.es <= E_ADV && dut.ch == n && m_run) n_stopmid = n_stopmid + 1;
+            if (stop[n] && dut.es > E_CH && dut.es != E_OUT && dut.ch == n && m_run) n_stopmid = n_stopmid + 1;
             if (start[n]) m_startp[n] = 1'b1;
             if (stop[n]) begin m_startp[n] = 1'b0; m_on[n] = 1'b0; end
         end

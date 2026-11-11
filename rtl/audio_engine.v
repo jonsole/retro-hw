@@ -118,11 +118,11 @@ module audio_engine #(
         if (rst || RDBACK == 0) rb_q <= 24'd0;
         else if (rb_re) case (rb_f)
             3'd0:    rb_q <= {21'd0, q_ctrl};
-            3'd1:    rb_q <= {{(24-BW){1'b0}}, q_lc};
-            3'd2:    rb_q <= {{(24-BW){1'b0}}, q_len};
+            3'd1:    rb_q <= 24'd0 | q_lc;
+            3'd2:    rb_q <= 24'd0 | q_len;
             3'd3:    rb_q <= {4'd0, q_step};
             3'd4:    rb_q <= {1'b0, q_vl, 9'd0, q_vr};
-            3'd5:    rb_q <= {{(24-BW){1'b0}}, p_pos[BW+15:16]};
+            3'd5:    rb_q <= 24'd0 | p_pos[BW+15:16];
             default: rb_q <= 24'd0;
         endcase
     end
@@ -130,7 +130,7 @@ module audio_engine #(
     // ================================================================ engine
     localparam E_IDLE = 4'd0, E_CH = 4'd1, E_GO = 4'd2, E_RD0 = 4'd3, E_RD1 = 4'd4, E_INT = 4'd5,
                E_W1 = 4'd6, E_MIX = 4'd7, E_W2 = 4'd8, E_L = 4'd9, E_W3 = 4'd10, E_R = 4'd11,
-               E_ADV = 4'd12, E_OUT = 4'd13;
+               E_ADV = 4'd12, E_OUT = 4'd13, E_G2 = 4'd14;
     reg  [3:0]      es;
     reg  [15:0]     cnt;                       // clocks to the next output sample; 0: due
     reg  [NCH-1:0]  startp;                    // starts waiting
@@ -144,7 +144,13 @@ module audio_engine #(
     reg  signed [15:0] s0_r, smp;
     reg  signed [16:0] ma, mb;                 // the multiplier's inputs
     reg  signed [33:0] mp;                     // ... and its product, a clock later
-    reg  signed [23:0] acc_l, acc_r;
+    // (the sums stay out of the multiplier's DSP block, or the tools build one for each)
+    (* use_dsp = "no" *) reg signed [23:0] acc_l, acc_r;
+    reg             pend;                      // a read is out: only then is a word back taken
+    reg             i1ok;                      // the sample after this one is in the block
+    reg  [BW+15:0]  pn, pw;                    // the next position; and less the block's length
+    reg  [BW-1:0]   cl;                        // the block's length
+    reg             pastr;                     // the next position is past the block's end
 
     wire            b16    = c_ctrl[0];
     wire            near   = (INTERP == 0) || c_ctrl[1];
@@ -152,20 +158,21 @@ module audio_engine #(
     // The channel's place (E_GO)
     wire [BW-1:0]   ip   = p_pos[BW+15:16];
     wire [BW-1:0]   ipn  = ip + 1'b1;
-    wire [BW-1:0]   ip1  = (ipn < p_len) ? ipn : ip;
     wire [BW-1:0]   pa0  = p_lc + (b16 ? {ip[BW-2:0], 1'b0}  : ip);
     // At a block's last sample s1 is the first sample of the block to come:
     // the one at the address register now (not for a one-shot, or a length of 0)
-    wire            xend = !(ipn < p_len) && !c_ctrl[2] && (q_len != {BW{1'b0}});
-    wire [BW-1:0]   pa1  = xend ? q_lc : p_lc + (b16 ? {ip1[BW-2:0], 1'b0} : ip1);
+    // (worked out a clock after a0, from a0, to keep the paths short: E_G2)
+    wire            xend = !i1ok && !c_ctrl[2] && (q_len != {BW{1'b0}});
+    wire [BW-1:0]   pa1  = xend ? q_lc : a0 + {{(BW-2){1'b0}}, i1ok && b16, i1ok && !b16};
     function signed [15:0] pick(input [15:0] w, input odd, input b16_);
         pick = b16_ ? w : {(odd == (LE == 0)) ? w[7:0] : w[15:8], 8'd0};
     endfunction
 
-    // Moving on (E_ADV)
-    wire [BW+15:0]  pnext = p_pos + {{(BW-4){1'b0}}, c_step};
-    wire            past  = pnext[BW+15:16] >= p_len;
-    wire [BW+15:0]  pwrap = pnext - {p_len, 16'd0};
+    // Moving on: the sums are made in the clocks of the volume multiplies
+    // (pn and cl in E_L, pw and pastr in E_W3), and used in E_ADV
+    wire [BW+15:0]  pnext = pn;
+    wire            past  = pastr;
+    wire [BW+15:0]  pwrap = pw;
 
     wire            take  = startp[ch] && !stop[ch];
     wire            last_ch = ({30'd0, ch} == NCH - 1);
@@ -176,14 +183,15 @@ module audio_engine #(
         out_v <= 1'b0;
         mp    <= ma * mb;
         if (mem_ack) mem_req <= 1'b0;
-        if (mem_rvalid) begin
-            d_v <= 1'b1;
-            d_r <= mem_rdata;
+        if (mem_rvalid && pend) begin
+            d_v  <= 1'b1;
+            d_r  <= mem_rdata;
+            pend <= 1'b0;
         end
         if (rst) begin
             es <= E_IDLE;  cnt <= 16'd0;  ch <= 2'd0;
             on <= {NCH{1'b0}};  startp <= {NCH{1'b0}};
-            mem_req <= 1'b0;  d_v <= 1'b0;
+            mem_req <= 1'b0;  d_v <= 1'b0;  pend <= 1'b0;
             out_l <= 16'sd0;  out_r <= 16'sd0;
         end else begin
             if (cnt != 16'd0) cnt <= cnt - 1'b1;
@@ -220,12 +228,17 @@ module audio_engine #(
                 end
 
                 E_GO: begin
-                    a0       <= pa0;
+                    a0   <= pa0;
+                    frac <= p_pos[15:0];
+                    i1ok <= (ipn < p_len);
+                    es   <= E_G2;
+                end
+
+                E_G2: begin
                     a1       <= pa1;
-                    frac     <= p_pos[15:0];
                     d_v      <= 1'b0;
-                    mem_req  <= 1'b1;
-                    mem_addr <= pa0[BW-1:1];
+                    mem_req  <= 1'b1;  pend <= 1'b1;
+                    mem_addr <= a0[BW-1:1];
                     es       <= E_RD0;
                 end
 
@@ -234,7 +247,7 @@ module audio_engine #(
                     d0  <= d_r;
                     d1  <= d_r;
                     if (!near && a1[BW-1:1] != a0[BW-1:1]) begin
-                        mem_req  <= 1'b1;
+                        mem_req  <= 1'b1;  pend <= 1'b1;
                         mem_addr <= a1[BW-1:1];
                         es       <= E_RD1;
                     end else es <= E_INT;
@@ -279,10 +292,16 @@ module audio_engine #(
                 E_L: begin
                     acc_l <= acc_l + mp[23:0];
                     mb    <= {10'd0, c_vr};
+                    pn    <= p_pos + {{(BW-4){1'b0}}, c_step};
+                    cl    <= p_len;
                     es    <= E_W3;
                 end
 
-                E_W3: es <= E_R;
+                E_W3: begin
+                    pw    <= pn - {cl, 16'd0};
+                    pastr <= (pn[BW+15:16] >= cl);
+                    es    <= E_R;
+                end
 
                 E_R: begin
                     acc_r <= acc_r + mp[23:0];
