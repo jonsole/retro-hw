@@ -1,6 +1,6 @@
 # Audio engine (audio_engine)
 
-Status: **draft**, revision 3: Jon's decisions are in (U1, U11), and both machines have reviewed and agreed it. Both machines' Vivado builds pass (U10, U12). It locks when its PR merges. `rtl/audio_engine.v` implements it and passes its model test. From retro68k's `fpga/rtl/audio.v` and its spec 6 (branch `live-ctrl`, 6955b38): the same sound but for interpolation across a block's end (4.3), with the registers' bus, the interrupt and the DACs left to the machine.
+Status: **locked**, revision 3, on the merge of its pull request (November 2026): Jon's decisions are in (U1, U11), both machines reviewed and agreed it, and both machines' Vivado builds pass (U10, U12). `rtl/audio_engine.v` implements it and passes its model test. Changes from here are a revision 4, by request from a machine.
 
 The audio engine plays sample channels from memory, in the spirit of the Amiga's Paula. Each channel plays a block of 8- or 16-bit samples at any pitch, with its own left and right volume, and needs no CPU work while it plays. At the end of a block a channel takes its address and length again, so a sample loops, or the next one can be queued. Once every output sample the engine visits the channels in turn, reads the one or two words each needs, and puts out one signed stereo sample.
 
