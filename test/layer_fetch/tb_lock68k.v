@@ -79,10 +79,24 @@ module tb_lock68k;
     // A whole pointer (a split screen) lands any time.
     wire         pb_ok     = ptr_be == 3'b111 || dut.pt[ptr_sel] == ref.pt[ptr_sel];
     wire         ptr_wr_g  = ptr_wr && pb_ok;
-    wire         ref_wr    = cu_on ? 1'b1 : (rb_wr && !(ptr_wr && !pb_ok));
-    wire [23:2]  ref_addr  = cu_on ? cu_ra[23:2] : rb_addr;
-    wire [31:0]  ref_wdata = cu_on ? {9'd0, ref.pt[cu_q]} : rb_wdata;
-    wire [3:0]   ref_be    = cu_on ? 4'b0111 : rb_be;
+    // A data-register write is held in the core and stored on the first
+    // clock with no fetched word (its one write port). The reference stores
+    // a write in the clock it gets it, so it is given each one in the clock
+    // the core stores it (h_go), on its bus. The bench sends nothing else
+    // while a write is held, and no data write close to a line's end, so
+    // the bus is free then.
+    wire         h_go      = dut.h_go;
+    wire [23:0]  h_ra      = 24'hE00100 + {19'd0, dut.h_sel[4:3]} * 24'h80 + 24'h40 + {21'd0, dut.h_sel[2:0]} * 24'h4;
+    wire         ref_wr    = cu_on ? 1'b1 : h_go ? 1'b1 : (rb_wr && !dat_wr && !(ptr_wr && !pb_ok));
+    wire [23:2]  ref_addr  = cu_on ? cu_ra[23:2] : h_go ? h_ra[23:2] : rb_addr;
+    wire [31:0]  ref_wdata = cu_on ? {9'd0, ref.pt[cu_q]} : h_go ? {16'd0, dut.h_d} : rb_wdata;
+    wire [3:0]   ref_be    = cu_on ? 4'b0111 : h_go ? {2'b00, dut.h_be} : rb_be;
+    integer      n_land = 0, n_hold = 0;
+    always @(posedge clk) if (!rst) begin
+        if (h_go) n_land = n_land + 1;
+        if (dut.h_v && !h_go) n_hold = n_hold + 1;
+        if (h_go && cu_on) begin $display("ERROR: the bench let a held write land during the line-end resets"); $finish; end
+    end
     integer      n_cu = 0, cp_q = -1;
     always @(posedge clk) begin
         cp_q = dut.c2_wr ? dut.c_q : -1;
@@ -256,7 +270,7 @@ module tb_lock68k;
             end
             // Register writes: one a clock at most. BPLDMA only in the line_go
             // clock. None while the core's line-end resets may run (above).
-            if (dut.line_go || dut.cu_act || dut.c_v) ;
+            if (dut.line_go || dut.cu_act || dut.c_v || dat_wr || (dut.h_v && !dut.h_go)) ;
             else if (dma_pending && r[9:8] != 2'd0)
                 write(2'd2, {$random} % 3, 3'd0, {$random} & 32'h0000_80FF, 4'b0011);
             else if (!dma_pending && r[12:8] == 5'd0)                                // a whole pointer, often just below a wrap block's end
@@ -265,7 +279,7 @@ module tb_lock68k;
                 write(2'd0, {$random} % 3, {$random} % 8, $random, 4'd1 << ({$random} % 3));   // one byte of one
             else if (!dma_pending && r[12:8] == 5'd2)
                 write(2'd1, {$random} % 3, 3'd0, $random, {2'b00, r[14:13] == 2'd0 ? 2'b01 : r[14:13] == 2'd1 ? 2'b10 : 2'b11});
-            else if (!dma_pending && r[12:8] == 5'd3)
+            else if (!dma_pending && r[12:8] == 5'd3 && lines_left > 6)
                 write(2'd3, {$random} % 3, {$random} % 8, $random, {2'b00, r[16:15] == 2'd0 ? 2'b01 : r[16:15] == 2'd1 ? 2'b10 : 2'b11});
         end
     end
@@ -327,6 +341,15 @@ module tb_lock68k;
         @(negedge clk);
         $display("%0d clocks, %0d lines: %0d requests, %0d urgent, %0d full, %0d pointer writes, %0d data writes (%0d completing a group), %0d pointer resets copied",
                  checks, line, n_req, n_urg, n_fill, n_ptrw, n_datw, n_datfill, n_cu);
+        $display("data-register writes: %0d sent, %0d stored, %0d clocks one waited for a fetched word", n_datw, n_land, n_hold);
+        if (n_datw != n_land + (dut.h_v ? 1 : 0)) begin
+            errors = errors + 1;
+            $display("ERROR: a data-register write was lost");
+        end
+        if (n_hold == 0) begin
+            errors = errors + 1;
+            $display("ERROR: no write ever waited for a fetched word");
+        end
         if (n_req < 1000 || n_urg == 0 || n_fill == 0 || n_ptrw == 0 || n_datw == 0 || n_datfill == 0 || n_cu == 0) begin
             errors = errors + 1;
             $display("ERROR: a case never came up");

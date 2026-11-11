@@ -516,9 +516,30 @@ module layer_fetch #(
     // DATWRITE: nothing of the layer is fetched (judged live), so a write of
     // register 0's low byte completes the group
     wire          r_lok    = ({{(32-LW){1'b0}}, r_layer} < NL);     // (always: says so to synthesis)
-    wire [LW-1:0] dw_layer = dat_sel[LW+2:3];
-    wire          dw_fills = (DATWRITE != 0) && dat_wr && dat_sel[2:0] == 3'd0 && dat_be[0]
+    // The data registers have one write port. A fetched word goes in as it
+    // comes; a machine write (DATWRITE) is held and goes in on the first
+    // clock with no fetched word, so all the registers share one choice of
+    // data. One write is held at a time: another dat_wr replaces it.
+    reg           h_v;                                              // a machine write waits
+    reg  [LW+2:0] h_sel;
+    reg  [15:0]   h_d;
+    reg  [1:0]    h_be;
+    wire          f_wr  = rvalid && r_lok && (r_b1 || r_wr);        // a fetched word (or a tile row's byte)
+    wire          h_go  = h_v && !f_wr;
+    wire          f_pick = f_wr || (DATWRITE == 0);                 // (without DATWRITE: no hold is built)
+    wire [LW+2:0] w_sel = f_pick ? (r_b1 ? {r_layer, 3'd0} : r_reg) : h_sel;
+    wire [15:0]   w_d   = f_pick ? (r_b1 ? {r_byte, r_byte} : r_word) : h_d;
+    wire [1:0]    w_be  = f_pick ? (r_b1 ? {r_slot[0], !r_slot[0]} : 2'b11) : h_be;
+    wire [LW-1:0] dw_layer = h_sel[LW+2:3];
+    wire          dw_fills = h_go && h_sel[2:0] == 3'd0 && h_be[0]
                              && !(enable && en_l[dw_layer] != 8'd0);
+    always @(posedge clk) begin
+        if (rst || DATWRITE == 0)  h_v <= 1'b0;
+        else if (dat_wr && ds_ok)  h_v <= 1'b1;
+        else if (h_go)             h_v <= 1'b0;
+        // (only a write to a register there is: one past the last layer's is dropped whole)
+        if (dat_wr && ds_ok && DATWRITE != 0) begin h_sel <= dat_sel;  h_d <= dat_wdata;  h_be <= dat_be; end
+    end
 
     // Next clock's request (the same choice as below), for the urgent register
     reg           n_req, n_ent;
@@ -573,11 +594,6 @@ module layer_fetch #(
             // Data back from the memory
             if (rvalid) begin
                 if (r_ent)  ent[{r_layer, !r_slot[0]}] <= rdata;                      // an entry, as read
-                if (r_b1 && r_lok) begin                                               // 1-bit tiles: the row's byte
-                    if (r_slot[0]) dr[{r_layer, 3'd0}][15:8] <= r_byte;               // column 0 high
-                    else           dr[{r_layer, 3'd0}][7:0]  <= r_byte;
-                end
-                if (r_wr && r_lok) dr[r_reg] <= r_word;
                 if (r_ok && q_fill[q_h]) fill_t[r_layer] <= ~fill_t[r_layer];
                 if (r_ok && q_last[q_h]) busy[r_layer]   <= 1'b0;
                 q_h <= q_h + 1'b1;
@@ -657,13 +673,14 @@ module layer_fetch #(
                 end
             end
 
-            // DATWRITE: a write into a data register wins, byte by byte, over
-            // a word arriving for it in the same clock
-            if ((DATWRITE != 0) && dat_wr && ds_ok) begin
-                if (dat_be[1]) dr[dat_sel][15:8] <= dat_wdata[15:8];
-                if (dat_be[0]) dr[dat_sel][7:0]  <= dat_wdata[7:0];
-                if (dw_fills) fill_t[dw_layer] <= ~take_s2[dw_layer];
+            // The data registers' one write: a fetched word (a 1-bit tile
+            // row's byte goes to one half: column 0 high), or the held
+            // machine write
+            if (f_wr || h_go) begin
+                if (w_be[1]) dr[w_sel][15:8] <= w_d[15:8];
+                if (w_be[0]) dr[w_sel][7:0]  <= w_d[7:0];
             end
+            if (dw_fills) fill_t[dw_layer] <= ~take_s2[dw_layer];
         end
     end
 endmodule
