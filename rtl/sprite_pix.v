@@ -34,8 +34,7 @@ module sprite_pix (
 
     // The FIFO: its front word, and the pointers (6 bits: 5 address, 1 lap)
     input  wire [15:0]        head,            // the word at rp (asynchronous read)
-    output reg  [5:0]         rp,
-    output wire [5:0]         rp_g,            // ... Gray-coded, for the 100 MHz side
+    output reg  [5:0]         rp,              // (a register: it crosses to the 100 MHz side as it is)
     input  wire [5:0]         wp_g,            // the write pointer, Gray-coded, from the 100 MHz side
     input  wire               flush_t,         // toggles: the FIFO was emptied (pointers to 0)
     output reg                flush_ack_t,
@@ -52,10 +51,10 @@ module sprite_pix (
             for (i = 4; i >= 0; i = i - 1) g2b[i] = g2b[i + 1] ^ g[i];
         end
     endfunction
-    assign rp_g = rp ^ (rp >> 1);
 
-    reg [5:0] wg1, wg2;
-    reg [1:0] fl_s;
+    // (synchronisers from the 100 MHz side: kept together by the tools)
+    (* ASYNC_REG = "TRUE" *) reg [5:0] wg1, wg2;
+    (* ASYNC_REG = "TRUE" *) reg [1:0] fl_s;
     always @(posedge clk_pix) begin
         wg1  <= wp_g;
         wg2  <= wg1;
@@ -66,8 +65,16 @@ module sprite_pix (
     wire       avail = cnt[5] ? (cnt == 6'd32) : (cnt != 6'd0);   // (more than 32: the reads have passed the writes)
 
     reg  skip;                         // flushed during this line: off until the next
-    wire in_span = act && !skip && (t >= hs) && (t < xe);
-    wire last_px = (t + 1'b1 == xe);
+    // The span is a flag: set as t comes to hs, cleared as it comes to xe
+    // (hs must not be after xe, and both after the settings are taken at 12)
+    reg  span;
+    wire [9:0] tn = t + 1'b1;
+    wire last_px  = (tn == xe);
+    wire in_span  = act && !skip && span;
+    always @(posedge clk_pix) begin
+        if (last_px || t == 10'd12) span <= 1'b0;
+        else if (tn == hs)          span <= 1'b1;
+    end
 
     reg  [2:0]  p;                     // pixel in the word
     reg  [10:0] f;                     // ... and the fraction

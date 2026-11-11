@@ -1,11 +1,12 @@
 # sprite_fetch.v: the unit test (two sprites from a memory model, their FIFOs
 # checked), and the core in lockstep with a frozen copy of its earlier self
-# (ref/) in both machines' builds. Passes when every log says TEST PASSED.
+# (ref/) in both machines' builds; sprite_pix.v in lockstep with a frozen copy
+# of its earlier self. Passes when every log says TEST PASSED.
 IVERILOG ?= iverilog
 VVP      ?= vvp
 RTL      := ../../rtl
 BUILD    := build
-LOGS     := $(BUILD)/sprites.log $(BUILD)/lock68k.log $(BUILD)/lockz80.log
+LOGS     := $(BUILD)/sprites.log $(BUILD)/lock68k.log $(BUILD)/lockz80.log $(BUILD)/lockpix.log
 
 .PHONY: test clean
 test: $(LOGS)
@@ -33,6 +34,13 @@ $(BUILD)/tb_lockz80.vvp: tb_lock_sprite.v ref/sprite_fetch_ref.v $(RTL)/sprite_f
 	$(IVERILOG) -g2005 -Wall -Wno-timescale -s tb_lock_sprite -o $@ \
 	    -Ptb_lock_sprite.NS=4 -Ptb_lock_sprite.PW=22 -Ptb_lock_sprite.LITTLE=1 -Ptb_lock_sprite.URGENT=6 -Ptb_lock_sprite.MANUAL=0 \
 	    tb_lock_sprite.v ref/sprite_fetch_ref.v $(RTL)/sprite_fetch.v
+
+# sprite_pix against its earlier self
+$(BUILD)/lockpix.log: $(BUILD)/tb_lock_pix.vvp
+	$(VVP) -n $< | tee $@
+$(BUILD)/tb_lock_pix.vvp: tb_lock_pix.v ref/sprite_pix_ref.v $(RTL)/sprite_pix.v
+	mkdir -p $(BUILD)
+	$(IVERILOG) -g2005 -Wall -Wno-timescale -s tb_lock_pix -o $@ tb_lock_pix.v ref/sprite_pix_ref.v $(RTL)/sprite_pix.v
 
 clean:
 	rm -rf $(BUILD)

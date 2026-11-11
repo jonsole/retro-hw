@@ -14,7 +14,7 @@ Status: **draft**
 | Scaling | XSTEP, 5.11 source pixels per screen pixel: screen pixel i shows source pixel floor(i × XSTEP / 2048) |
 | Colour index | 8 bits: the 8-bit value, or PAL in bits 7–4 and the 2- or 4-bit value below |
 | Transparent | Value 0, and every place before `t` = 144 |
-| FIFO | Read side: an asynchronous read at `rp`, 6-bit pointers (5 address, 1 lap), Gray-coded across |
+| FIFO | Read side: an asynchronous read at `rp`, 6-bit pointers (5 address, 1 lap); the write pointer arrives Gray-coded, the read pointer leaves as it is |
 | Underrun | A DMA sprite whose FIFO is empty when a word is needed shows nothing more until it is flushed |
 | Pipeline | One stage: `opaque` and `idx` are registered |
 
@@ -33,8 +33,7 @@ Status: **draft**
 | `pal` | in | 4 | Palette bits for 2- and 4-bit pixels | As `act` |
 | `dma` | in | 1 | Fed by the DMA: an empty FIFO is an underrun | As `act` |
 | `head` | in | 16 | The FIFO word at `rp` | Combinational from `rp` |
-| `rp` | out | 6 | Read pointer | Registered |
-| `rp_g` | out | 6 | ... Gray-coded, for the system clock side | |
+| `rp` | out | 6 | Read pointer; also wired to `sprite_fetch`'s `rp` as it is | Registered |
 | `wp_g` | in | 6 | Write pointer, Gray-coded, from the system clock side | Synchronised here (2 flops) |
 | `flush_t` | in | 1 | Toggles: the FIFO was emptied | Synchronised here (2 flops) |
 | `flush_ack_t` | out | 1 | Toggles back once this end is emptied | |
@@ -48,7 +47,7 @@ None.
 
 ## 4. Behaviour
 
-- **Span.** The sprite draws while `act`, `hs` ≤ `t` < `xe`, and it was not flushed during this line. Outside the span `opaque` is 0.
+- **Span.** The sprite draws while `act`, `hs` ≤ `t` < `xe`, and it was not flushed during this line. Outside the span `opaque` is 0. The span is kept as a flag, set as `t` comes to `hs` and cleared as it comes to `xe`, so `hs` must not be after `xe`, and `hs` must be 16 or more (`sprite_fetch`'s `p_hs` and `p_xe` keep the first; HSTART the second). With `hs` = `xe` the span is empty.
 - **Pixels in a word.** The word's high bits are the first pixel: 8 pixels of 2 bits, 4 of 4 bits, 2 of 8 bits.
 - **Stepping.** The unit keeps a pixel in the front word and an 11-bit fraction. Each clock in the span it adds `xstep`; the words passed go (`rp` moves on, by more than one when the sprite is shrunk).
 - **End of span.** At the span's last pixel the word in use goes too, used up or not, and the place goes back to the start of a word. So each line takes exactly the words `sprite_fetch` fetched for it.
@@ -61,12 +60,12 @@ None.
 
 - Build one per sprite, all on the pixel clock, with `t` counting the sprite's line as above.
 - Take each sprite's settings from `sprite_fetch` (`p_act`, `p_hs`, `p_xe`, `p_lb`, `p_xstep`, `p_pal`, `p_dma`) into pixel clock registers at `t` = 12, and hold them for the line. HSTART must therefore be 16 or more.
-- Wire `rp`'s low 5 bits to the sprite's `fifo_ra`, `head` to its `fifo_rd`, and the Gray pointers and flush toggles to `sprite_fetch`.
+- Wire `rp`'s low 5 bits to the sprite's `fifo_ra`, `head` to its `fifo_rd`, and `rp`, `wp_g` and the flush toggles to `sprite_fetch`.
 - Put the pixels through the machine's own priority and palette; gather collisions between `opaque` outputs over a line and hand them to `sprite_fetch` with a toggle.
 
 ## 6. Test plan
 
-There is no unit test of its own yet. The machines' video tests check it with whole frames against a model: every bits-per-pixel value, scaling up and down, sprites partly left of the screen, flushes while drawn, and underruns.
+`test/sprites`' `tb_lock_pix` runs the core in lockstep with a frozen copy of its earlier self (`ref/sprite_pix_ref.v`, from before the span became a flag) for 3 million clocks: random legal settings a line (the earliest start, the line's end, empty and one-pixel spans), every bits-per-pixel value and step, a FIFO that fills by spells so underruns come up, flushes, video off. Every output is compared every clock. There is no model test of its own yet. The machines' video tests check it with whole frames against a model: every bits-per-pixel value, scaling up and down, sprites partly left of the screen, flushes while drawn, and underruns.
 
 ## 7. Open points
 

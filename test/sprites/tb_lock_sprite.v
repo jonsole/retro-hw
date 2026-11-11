@@ -50,7 +50,7 @@ module tb_lock_sprite;
     reg  [15:0]  dat = 16'd0;
     reg  [10:0]  beam_v = 11'd1, beam_h = 11'd0;
     reg  [39:0]  fifo_ra = 40'd0;
-    reg  [47:0]  rp_g = 48'd0;
+    reg  [47:0]  rp_g = 48'd0, rp_b = 48'd0;     // to the reference (Gray, a clock later), to the core (binary)
     reg  [31:0]  coll_line = 32'd0, coll_clr = 32'd0;
     reg          ack = 1'b0, rvalid = 1'b0;
     reg  [15:0]  rdata = 16'd0;
@@ -68,12 +68,17 @@ module tb_lock_sprite;
     wire [31:0]   r_pal, c_pal, r_coll, c_coll;
     wire [47:0]   r_wp, c_wp;
 
+    // A hand-fed word goes into the core's FIFO a clock or more after its
+    // strobe (when no memory word comes): the reference is given it then.
+    // The bench holds sel and sends no other strobe for sel until it is in
+    wire r_dat_wr = (MANUAL != 0) ? dut.m_go : dat_wr;
+    wire m_hold   = dat_wr || (dut.m_p && !dut.m_go);
     sprite_fetch_ref #(.NS(NS), .PW(PW), .SWAP_BYTES(LITTLE), .URGENT(URGENT), .MANUAL(MANUAL)) ref (
         .clk(clk), .rst(rst), .set_sel(r_set_sel),
         .set_hstart(set_hstart), .set_hstop(set_hstop), .set_vstart(set_vstart), .set_vstop(set_vstop),
         .set_bpp(set_bpp), .set_depth(set_depth), .set_pal(set_pal), .set_xstep(set_xstep), .set_ystep(set_ystep),
         .dma_on(dma_on), .dma_mask(dma_mask), .start(start), .sel(sel), .lst_cur(r_lst), .lst_wr(lst_wr), .lst_new(lst_new),
-        .fifo_count(r_cnt), .dat_wr(dat_wr), .dat(dat), .vblank(vblank), .beam_v(beam_v), .beam_h(beam_h),
+        .fifo_count(r_cnt), .dat_wr(r_dat_wr), .dat(dat), .vblank(vblank), .beam_v(beam_v), .beam_h(beam_h),
         .mem_req(r_req), .mem_addr(r_addr), .mem_deadline(r_dl), .mem_urgent(r_urg),
         .mem_ack(ack), .mem_rvalid(rvalid), .mem_rdata(rdata),
         .p_hs(r_hs), .p_xe(r_xe), .p_act(r_act), .p_lb(r_lb), .p_xstep(r_xstep), .p_depth(r_depth), .p_pal(r_pal), .p_dma(r_dma),
@@ -89,7 +94,7 @@ module tb_lock_sprite;
         .mem_req(c_req), .mem_addr(c_addr), .mem_urgent(c_urg),
         .mem_ack(ack), .mem_rvalid(rvalid), .mem_rdata(rdata),
         .p_hs(c_hs), .p_xe(c_xe), .p_act(c_act), .p_lb(c_lb), .p_xstep(c_xstep), .p_depth(c_depth), .p_pal(c_pal), .p_dma(c_dma),
-        .fifo_ra(fifo_ra), .fifo_rd(c_rd), .wp_g(c_wp), .rp_g(rp_g), .flush_t(c_flush), .flush_ack_t(flush_ack_t),
+        .fifo_ra(fifo_ra), .fifo_rd(c_rd), .wp_g(c_wp), .rp(rp_b), .flush_t(c_flush), .flush_ack_t(flush_ack_t),
         .coll_line(coll_line), .coll_t(coll_t), .coll_clr(coll_clr), .coll(c_coll));
 
     // ---------------------------------------------------------------- memory and scheduler
@@ -140,6 +145,8 @@ module tb_lock_sprite;
     // one; a flush empties the pointer and is acknowledged a few clocks on
     reg [5:0] rp [0:7];
     reg [3:0] fl_wait [0:7];
+    reg [2:0] rp_hold [0:7];
+    reg [47:0] r_wp_d = 48'd0;                 // the reference's wp_g a clock ago: the core registers its own
     reg [7:0] fl_seen = 8'd0;
     function [5:0] g2b(input [5:0] gv);
         integer k;
@@ -151,16 +158,25 @@ module tb_lock_sprite;
     integer m;
     always @(posedge clk) if (!rst)
         for (m = 0; m < 8; m = m + 1) begin
-            if (r_flush[m] != fl_seen[m]) begin                       // a flush: empty, then acknowledge
+            if (r_flush[m] != fl_seen[m] && rp_hold[m] != 3'd0) rp_hold[m] <= rp_hold[m] - 1'b1;   // (the pointer just moved: wait)
+            else if (r_flush[m] != fl_seen[m]) begin                  // a flush: empty, then acknowledge
                 if (fl_wait[m] == 4'd0) begin
                     rp[m] <= 6'd0;
                     flush_ack_t[m] <= ~flush_ack_t[m];
                     fl_seen[m] <= r_flush[m];
                     fl_wait[m] <= {$random} % 12;
+                    rp_hold[m] <= 3'd4;
                 end else fl_wait[m] <= fl_wait[m] - 1'b1;
-            end else if (g2b(r_wp[6*m +: 6]) != rp[m] && ({$random} % 4 == 0))
-                rp[m] <= rp[m] + 1'b1;
-            rp_g[6*m +: 6] <= rp[m] ^ (rp[m] >> 1);
+            end else if (rp_hold[m] != 3'd0) rp_hold[m] <= rp_hold[m] - 1'b1;
+            else if (g2b(r_wp[6*m +: 6]) != rp[m] && ({$random} % 2 == 0)) begin
+                rp[m] <= rp[m] + 1'b1 + (({$random} % 4 == 0) ? {$random} % 3 : 0);   // sometimes several words at once
+                rp_hold[m] <= 3'd4;
+            end
+            // A pointer holds for 5 clocks, as from a slower pixel clock. The
+            // core accepts it when two samples agree, a clock later than the
+            // reference's Gray synchroniser, so the reference gets it a clock late
+            rp_b[6*m +: 6] <= rp[m];
+            rp_g[6*m +: 6] <= rp_b[6*m +: 6] ^ (rp_b[6*m +: 6] >> 1);
         end
 
     // ---------------------------------------------------------------- the machine
@@ -171,7 +187,7 @@ module tb_lock_sprite;
         lst_wr <= 1'b0;  dat_wr <= 1'b0;  start <= 8'd0;  coll_clr <= 32'd0;
         if (!rst) begin
             r = $random;
-            sel <= $random;
+            if (!m_hold) sel <= $random;
             fifo_ra <= {$random, $random};
             // Settings: changed one at a time, now and then. Not in the
             // clock a sprite is handed over to the core: it registers them
@@ -187,7 +203,7 @@ module tb_lock_sprite;
                     3: begin s_bpp[j] <= $random; s_depth[j] <= $random; s_pal[j] <= $random; end   // bpp 3 too: undefined, but software can write it
                     4: s_xstep[j]  <= ({$random} % 4 == 0) ? $random : 16'h0400 + ({$random} % 16'h1800);
                     5: s_ystep[j]  <= ({$random} % 4 == 0) ? $random : 16'h0400 + ({$random} % 16'h1800);
-                    default: begin
+                    default: if (!m_hold) begin
                         lst_wr <= 1'b1;  lst_new <= {$random} & ((1 << PW) - 1);
                     end
                 endcase
@@ -196,7 +212,7 @@ module tb_lock_sprite;
             if (r[15:8] == 8'd2 && r[19:16] == 4'd0) dma_mask <= $random | 8'h0F;  // sprites 0-3 always on the DMA
             if (r[15:8] == 8'd3 && r[19:16] == 4'd0) dma_on <= ~dma_on;
             if (cyc == 40) start <= 8'hFF;                                        // every sprite starts
-            if (r[15:8] == 8'd4) begin dat_wr <= 1'b1; dat <= $random; end
+            if (r[15:8] == 8'd4 && !m_hold) begin dat_wr <= 1'b1; dat <= $random; end
             if (r[15:8] == 8'd5) coll_clr <= $random;
             if (r[15:8] == 8'd6) begin coll_line <= $random; end
             if (r[15:8] == 8'd7 && r[16]) coll_t <= ~coll_t;
@@ -230,7 +246,8 @@ module tb_lock_sprite;
         if (c_pal !== r_pal) fail("p_pal", c_pal, r_pal);
         if (c_dma !== r_dma) fail("p_dma", c_dma, r_dma);
         if (c_rd !== r_rd) fail("fifo_rd", c_rd, r_rd);
-        if (c_wp !== r_wp) fail("wp_g", c_wp, r_wp);
+        if (c_wp !== r_wp_d) fail("wp_g", c_wp, r_wp_d);
+        r_wp_d <= r_wp;
         if (c_flush !== r_flush) fail("flush_t", c_flush, r_flush);
         if (c_coll !== r_coll) fail("coll", c_coll, r_coll);
         // urgent: the reference's compare for this clock's request, with the deadline of the clock before
@@ -249,7 +266,7 @@ module tb_lock_sprite;
         for (m = 0; m < 8; m = m + 1) begin
             s_hstart[m] = 11'd100 + 40*m;  s_hstop[m] = 11'd140 + 40*m;  s_vstart[m] = 11'd0 + 2*m;  s_vstop[m] = 11'd500 + 30*m;
             s_bpp[m] = m % 3;  s_depth[m] = m;  s_pal[m] = m;  s_xstep[m] = 16'h0800;  s_ystep[m] = 16'h0800;
-            rp[m] = 6'd0;  fl_wait[m] = 4'd0;  prev_dl[m] = 7'h7F;
+            rp[m] = 6'd0;  rp_hold[m] = 3'd0;  fl_wait[m] = 4'd0;  prev_dl[m] = 7'h7F;
         end
         repeat (4) @(posedge clk);
         @(negedge clk) rst = 1'b0;

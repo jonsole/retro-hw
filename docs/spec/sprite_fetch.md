@@ -12,7 +12,7 @@ The core holds no registers of the machine. The machine keeps each sprite's sett
 |------|-------|
 | Sprites | 8 ports; `NS` (1–8) built |
 | Clock | The system clock (100 MHz). The FIFOs' read side is in the pixel clock domain |
-| FIFO | 32 words of 16 bits per sprite, distributed RAM; Gray-coded pointers across the domains |
+| FIFO | 32 words of 16 bits per sprite, distributed RAM; the write pointers cross Gray-coded, the read pointers as registered binary taken when two samples agree |
 | Bits per pixel | 2, 4 or 8 |
 | Scaling | XSTEP and YSTEP, 5.11 fixed point source pixels per screen pixel, limited to `0x0080`–`0x8000` (0 is taken as 1:1) |
 | Window | HSTART, HSTOP in beam pixels (0–864); VSTART, VSTOP in beam lines (0–625) |
@@ -62,8 +62,8 @@ All ports are in the system clock domain unless the table says otherwise. A stro
 | `p_dma` | out | 8 | The sprite is fed by the DMA (`dma_on` and its `dma_mask` bit, and built) | Combinational |
 | `fifo_ra` | in | 8 × 5 | Pixel side: read addresses | Pixel clock |
 | `fifo_rd` | out | 8 × 16 | The words there (asynchronous read) | |
-| `wp_g` | out | 8 × 6 | Write pointers, Gray-coded | System clock; synchronise on the pixel side |
-| `rp_g` | in | 8 × 6 | Read pointers, Gray-coded | Pixel clock; synchronised here (2 flops) |
+| `wp_g` | out | 8 × 6 | Write pointers, Gray-coded, straight from registers | System clock; synchronise on the pixel side |
+| `rp` | in | 8 × 6 | Read pointers, binary, straight from `sprite_pix`'s registers | Pixel clock; synchronised here (2 flops), and a value is used only when two successive samples agree, because a read pointer can move several words in one step. The pixel clock must be at most a third of the system clock, and the skew between a pointer's bits on their way across well under one system clock (true of any sane placement; a machine may bound it with a max delay) |
 | `flush_t` | out | 8 | Toggles: the sprite's FIFO was emptied | |
 | `flush_ack_t` | in | 8 | Toggles back: the pixel side has emptied its end | Pixel clock; synchronised here |
 | `coll_line` | in | 32 | Collisions found on a line | Steady from before `coll_t` toggles until the next toggle |
@@ -123,7 +123,8 @@ All ports are in the system clock domain unless the table says otherwise. A stro
 
 ### 4.7 Feeding by hand (`MANUAL`)
 
-- With `MANUAL` 1, a `dat_wr` writes `dat` at the back of sprite `sel`'s FIFO if the sprite is built, its DMA is off (`p_dma` 0), it is not being flushed, and the FIFO holds fewer than 32 words. Otherwise the word is dropped.
+- With `MANUAL` 1, a `dat_wr` takes `dat` and `sel`, and the word is written at the back of that sprite's FIFO on the first later clock in which no word comes back from memory (`mem_rvalid` 0): usually the next clock. It is written if the sprite is built, its DMA is off (`p_dma` 0), it is not being flushed, and the FIFO holds fewer than 32 words at that clock. Otherwise the word is dropped.
+- **Limitation: one word waits at a time.** A `dat_wr` while an earlier word still waits replaces it, and the earlier word is lost with no sign. A word waits only while memory words come back, so one writer whose writes are several clocks apart (a CPU) is safe. Two writers that can strobe `dat_wr` in successive clocks (a CPU and a copper, say) must not both feed sprites by hand at the same time: the core has no busy signal to hold the second.
 - `fifo_count` is the words in sprite `sel`'s FIFO, from a read pointer a few clocks old.
 
 ### 4.8 Reset
@@ -142,7 +143,7 @@ A wrapper must provide:
 - With `MANUAL`: the data register's writes as `dat_wr`, and `fifo_count` for its count register.
 - The `vblank` strobe and the beam, in the system clock domain.
 - A sprite channel on the memory scheduler: request, acknowledge, read valid in order, the deadline and the urgent flag.
-- One `sprite_pix` per built sprite in the pixel clock domain, wired to `fifo_ra`, `fifo_rd`, `wp_g`, `rp_g`, `flush_t`, `flush_ack_t`, and given the `p_` settings, which it must take at beam pixel 12 (after the line-start pass). A sprite not built needs `flush_ack_t` tied to its `flush_t`.
+- One `sprite_pix` per built sprite in the pixel clock domain, wired to `fifo_ra`, `fifo_rd`, `wp_g`, `rp`, `flush_t`, `flush_ack_t`, and given the `p_` settings, which it must take at beam pixel 12 (after the line-start pass). A sprite not built needs `flush_ack_t` tied to its `flush_t`.
 
 ## 6. Test plan
 
