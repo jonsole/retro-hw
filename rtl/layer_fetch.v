@@ -526,9 +526,10 @@ module layer_fetch #(
     reg  [1:0]    h_be;
     wire          f_wr  = rvalid && r_lok && (r_b1 || r_wr);        // a fetched word (or a tile row's byte)
     wire          h_go  = h_v && !f_wr;
-    wire [LW+2:0] w_sel = f_wr ? (r_b1 ? {r_layer, 3'd0} : r_reg) : h_sel;
-    wire [15:0]   w_d   = f_wr ? (r_b1 ? {r_byte, r_byte} : r_word) : h_d;
-    wire [1:0]    w_be  = f_wr ? (r_b1 ? {r_slot[0], !r_slot[0]} : 2'b11) : h_be;
+    wire          f_pick = f_wr || (DATWRITE == 0);                 // (without DATWRITE: no hold is built)
+    wire [LW+2:0] w_sel = f_pick ? (r_b1 ? {r_layer, 3'd0} : r_reg) : h_sel;
+    wire [15:0]   w_d   = f_pick ? (r_b1 ? {r_byte, r_byte} : r_word) : h_d;
+    wire [1:0]    w_be  = f_pick ? (r_b1 ? {r_slot[0], !r_slot[0]} : 2'b11) : h_be;
     wire [LW-1:0] dw_layer = h_sel[LW+2:3];
     wire          dw_fills = h_go && h_sel[2:0] == 3'd0 && h_be[0]
                              && !(enable && en_l[dw_layer] != 8'd0);
@@ -536,7 +537,8 @@ module layer_fetch #(
         if (rst || DATWRITE == 0)  h_v <= 1'b0;
         else if (dat_wr && ds_ok)  h_v <= 1'b1;
         else if (h_go)             h_v <= 1'b0;
-        if (dat_wr) begin h_sel <= dat_sel;  h_d <= dat_wdata;  h_be <= dat_be; end
+        // (only a write to a register there is: one past the last layer's is dropped whole)
+        if (dat_wr && ds_ok && DATWRITE != 0) begin h_sel <= dat_sel;  h_d <= dat_wdata;  h_be <= dat_be; end
     end
 
     // Next clock's request (the same choice as below), for the urgent register
