@@ -40,6 +40,7 @@ check raster      "-set LE 1 -set TRI 1"
 check raster      "-set LE 0 -set TRI 0"
 check geom        "-set AW 20"
 check sigma_delta2 "-set ORDER 1"
+check tmds_encoder "-set HDMI 1"
 check audio_engine "-set NCH 2 -set AW 20 -set LE 1 -set INTERP 0 -set RDBACK 0"
 
 if [ $fail -ne 0 ]; then exit 1; fi

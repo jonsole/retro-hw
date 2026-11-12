@@ -35,6 +35,9 @@ There is no simulation model of `hdmi_out` (open point P1).
 | `rgb` | in | 24 | Bits 23–16 red, 15–8 green, 7–0 blue | Sampled at each `clk_pix` edge |
 | `hsync`, `vsync` | in | 1 each | The syncs, at the level to be sent (for 576p both active low) | With `rgb` |
 | `de` | in | 1 | 1 = picture, 0 = blanking | With `rgb` |
+| `hdmi_on` | in | 1 | With `AUDIO`: 1 sends HDMI with sound, 0 DVI | A level; taken at a frame's start |
+| `clk` | in | 1 | With `AUDIO`: the system clock, for the samples | – |
+| `aud_l`, `aud_r`, `aud_v` | in | 16, 16, 1 | With `AUDIO`: a signed stereo sample and its strobe | On `clk` |
 | `tmds_p`, `tmds_n` | out | 4 each | The four TMDS pairs: 0 blue, 1 green, 2 red, 3 clock | To the pins only |
 
 ### 2.2 `oddr`
@@ -48,10 +51,10 @@ There is no simulation model of `hdmi_out` (open point P1).
 
 ## 3. Parameters
 
-`hdmi_out` has none.
-
 | Part | Name | Default | Meaning |
 |------|------|---------|---------|
+| `hdmi_out` | AUDIO | 0 | 1: HDMI with stereo sound through `hdmi_packets`; the picture leaves 12 pixel clocks later. 0: DVI only |
+| `hdmi_out` | VIC | 17 | With AUDIO: the picture's video code for the AVI InfoFrame |
 | `oddr` | W | 1 | Number of bits |
 | `oddr` | INIT | 0 | The value of `q` at power-up, before the first clock, per bit. A machine's SRAM controls use 1, so /OE, /WE and the data enable are off from the start |
 
@@ -117,4 +120,4 @@ The Artix-7 files are not simulated anywhere: neither machine's testbench has th
 | P3 | `hdmi_out`'s header says "on the KS3", but the KS2 uses it too; its spec reference ("spec 4, section 3.3") is a machine's. Proposed: point to this spec |
 | P4 | `lint_stub.v`'s header refers to `fpga/lint.sh`, a machine's path; here it is `lint.sh` at the top |
 | P5 | `platform/sim/oddr.v` holds `d_f` in a register with no initial value. If a testbench's clock starts with a falling edge, `q` is X for half a clock. Harmless in both machines' testbenches |
-| P6 | HDMI audio and InfoFrames would need data islands in the encoder and a guard-band path here (`tmds_encoder`, E3) |
+| P6 | Done: `hdmi_out` with `AUDIO` = 1 puts `hdmi_packets` in front of the encoders (its spec); `VIC` is the picture's code for the AVI InfoFrame. With `AUDIO` = 0 it is the DVI output as before and the new inputs are not used |
