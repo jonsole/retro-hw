@@ -219,7 +219,7 @@ module tb_hdmi_packets;
                     for (s = 0; s < 4; s = s + 1) for (i2 = 0; i2 < 7; i2 = i2 + 1) sum = sum + sb[s][8*i2 +: 8];
                     if (sum % 256 != 0) fail("AVI checksum", sum % 256, 0);
                     d = sb[0][55:0];
-                    if (d[15:8] !== 8'h02) fail("AVI byte 1 (RGB, underscan)", d[15:8], 8'h02);
+                    if (d[15:8] !== 8'h12) fail("AVI byte 1 (RGB, active format valid, underscan)", d[15:8], 8'h12);
                     if (d[23:16] !== 8'h18) fail("AVI byte 2 (4:3)", d[23:16], 8'h18);
                     if (d[31:24] !== 8'h08) fail("AVI byte 3 (full range)", d[31:24], 8'h08);
                     if (d[39:32] !== 8'd17) fail("AVI byte 4 (VIC)", d[39:32], 17);

@@ -121,7 +121,7 @@ module hdmi_packets #(
         cs_bit = (f == 8'd2) || (f == (right ? 8'd21 : 8'd20)) || (f == 8'd25) || (f == 8'd33);
     endfunction
 
-    localparam [7:0] AVI_1 = 8'h02,            // RGB; underscanned
+    localparam [7:0] AVI_1 = 8'h12,            // RGB; the active format below is valid; underscanned
                      AVI_2 = 8'h18,            // 4:3; active picture as the picture
                      AVI_3 = 8'h08,            // full range
                      AVI_4 = VIC;

@@ -85,7 +85,7 @@ So the blank must be at least 80 + 12 = 92 pixels: HDMI wants 12 control words o
 | Null | 0, 0, 0 | All 0 |
 | Audio Sample | 0x02; the samples present in bits 3–0; bits 7–4 mark a sample that begins a block of 192 | One a sample, from subpacket 0 up: bytes 0–2 the left sample in 24 bits (the 16 bits in the top), 3–5 the right, byte 6 the left then right {parity, channel status, user 0, valid 0} |
 | Audio Clock Regeneration | 0x01, 0, 0 | All four the same: byte 0 0; bytes 1–3 CTS, 20 bits, high first; bytes 4–6 N = 6144 |
-| AVI InfoFrame | 0x82, 0x02, 0x0D | Subpacket 0: the checksum, then 0x02 (RGB, underscanned), 0x18 (4:3, active picture as the picture), 0x08 (full range), `VIC`, 0, 0. The rest 0 |
+| AVI InfoFrame | 0x82, 0x02, 0x0D | Subpacket 0: the checksum, then 0x12 (RGB, the active format valid, underscanned), 0x18 (4:3, active picture as the picture), 0x08 (full range), `VIC`, 0, 0. The rest 0 |
 | Audio InfoFrame | 0x84, 0x01, 0x0A | Subpacket 0: the checksum, then 0x01 (two channels; the rest as the stream says). The rest 0 |
 
 - **Samples.** A sample crosses from `clk` and waits in a FIFO of 8. As a line's blank begins, up to four waiting samples are taken for that line's first packet; with none waiting the packet is a null packet. Samples go out in the order they came, each once. With the FIFO full a new sample is dropped (only with HDMI off, or with no islands yet).
@@ -96,7 +96,7 @@ So the blank must be at least 80 + 12 = 92 pixels: HDMI wants 12 control words o
 
 ### 4.5 The sample rate
 
-The stream says 48 kHz, and the samples are sent as they come. The display's sample clock is 128 × the pixel clock × N / CTS, so with CTS measured it follows the machine's real rate: 48.008 kHz for a sample every 2,083 clocks of 100 MHz, 160 parts in a million from 48 kHz. A machine whose rate is far from 48 kHz would need another N and channel status, which this revision does not have.
+The stream says 48 kHz, and the samples are sent as they come. The display's sample clock is 128 × the pixel clock × N / CTS, so with CTS measured it follows the machine's real rate: 48.008 kHz for a sample every 2,083 clocks of 100 MHz, 160 parts in a million from 48 kHz. A machine whose rate is far from 48 kHz would need another N and channel status, which this revision does not have. So a machine whose sound rate software can change does not give the core that rate's strobe: it gives a fixed strobe of about 48 kHz (every 2,083 clocks of 100 MHz) that takes its mixer's last sample, whatever the rate register says. Both machines do.
 
 ### 4.6 Off: DVI
 
@@ -112,6 +112,7 @@ The stream says 48 kHz, and the samples are sent as they come. The display's sam
 - The picture and syncs as for DVI. The blank must be 92 pixels or more a line (576p's is 144).
 - `aud_l`, `aud_r` and `aud_v` from the machine's sound: `audio_engine`'s `out_l`, `out_r` and `out_v`, or the machine's own mix with a strobe.
 - `on` from a register, 1 after reset, so that software can fall back to DVI for a display that will not take HDMI.
+- The crossing: `h_t` goes through two flip-flops on `clk_pix`, and `h_l` and `h_r` are read on `clk_pix` a clock or more after it settles; they hold for a whole sample period. Asynchronous clock groups between the two clocks cover it, or a max delay on the datapath from `h_l` and `h_r`. Timed as related clocks (an out-of-context build), those paths fail falsely.
 - The picture leaves 12 clocks later than without the core. Nothing else in a machine sees that.
 
 ## 6. Test plan
@@ -131,3 +132,4 @@ The stream says 48 kHz, and the samples are sent as they come. The display's sam
 | H3 | Size, Yosys for 7-series: 454 logic cells, 26 shift registers, 6 RAM32M and 602 flip-flops, and 16 more cells in each encoder. The KS2 may not have the room |
 | H4 | One sample rate and one picture format are described. Other rates (N, the channel status) and a 16:9 picture would be parameters or inputs in a later revision |
 | H5 | The channel status says copy allowed and gives no category. No display is known to mind |
+| H6 | From the machines' review (both checked every layout against HDMI 1.4, CEA-861 and a transmitter of Jon's that has been heard on the KS2): the AVI InfoFrame's byte 1 now marks its active format as valid. Open, for Jon: the frame says full range, which a display need only honour if it says it can; for a 576-line picture some TVs will take limited range all the same and crush blacks under HDMI where DVI looked right. The other transmitter sends the default range |
