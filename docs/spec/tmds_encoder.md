@@ -16,8 +16,8 @@ File: `rtl/tmds_encoder.v`.
 | Latency | 1 pixel clock |
 | Data periods | DVI 1.0 8b/10b: transition minimising (XOR or XNOR chain), DC balance (running disparity, 5 bits signed) |
 | Control periods | The four DVI control words; the disparity is cleared |
-| Not done | HDMI data islands, guard bands, TERC4 (no audio, no InfoFrames) |
-| Parameters | None |
+| HDMI | With `HDMI` = 1: also guard band words and TERC4 words, chosen by `m`, for data islands (`hdmi_packets` drives them). Without: DVI only |
+| Parameters | `HDMI` |
 
 ## 2. Ports
 
@@ -26,12 +26,17 @@ File: `rtl/tmds_encoder.v`.
 | `clk` | in | 1 | Pixel clock | – |
 | `d` | in | 8 | The colour component, 0–255 | Sampled at each edge while `de` is 1 |
 | `c` | in | 2 | Control bits C1, C0. On the blue lane {vsync, hsync}; 0 on the others for DVI | Sampled at each edge while `de` is 0 |
+| `m` | in | 2 | With `HDMI`: 0 the word `de` says (a pixel or a control word); 1 a guard band word; 2 the TERC4 word of `a`. Without: not used (tie to 0) | Sampled at each edge |
+| `g` | in | 1 | With `HDMI`: the guard band word: 0 is 1011001100, 1 is 0100110011 | With `m` = 1 |
+| `a` | in | 4 | With `HDMI`: the four bits for TERC4 | With `m` = 2 |
 | `de` | in | 1 | 1 = data (active picture), 0 = control (blanking) | Sampled at each edge |
 | `q` | out | 10 | The TMDS word. Bit 0 is sent first | Registered: the word for the inputs at edge n is on `q` from edge n |
 
 ## 3. Parameters
 
-None.
+| Name | Default | Meaning |
+|------|---------|---------|
+| `HDMI` | 0 | 1: `m`, `g` and `a` are used: guard band and TERC4 words for HDMI's data islands. 0: DVI only, and they are not used |
 
 ## 4. Behaviour
 
@@ -95,5 +100,5 @@ There is no unit test in `test/` yet (open point E1). Neither machine's simulati
 |---|------|
 | E1 | Proposed: a unit test `test/tmds_encoder/` with a reference model of DVI 1.0's flow chart (in the testbench, or words from a Python model): all 256 values of `d` from each disparity reached, random runs of data, the four control words, `cnt` cleared by a control period; and a decoder that checks each word decodes back to `d`, that the disparity stays bounded, and that a data word never matches a control word |
 | E2 | `cnt` relies on its initial value; there is no reset. This is fine on an FPGA. A reset port could be added if a machine needs one |
-| E3 | Data islands (HDMI audio and InfoFrames) are not supported: the output is DVI. A machine that wants HDMI audio needs a different encoder or a TERC4 path beside this one |
+| E3 | Done: with `HDMI` = 1 the encoder sends guard band and TERC4 words too (the 16 TERC4 words of HDMI 1.4, table 5-6), and the running disparity is cleared by them as by a control word. `test/hdmi_packets` decodes them |
 | E4 | The data path is one pixel clock of logic. At 27 MHz this has a wide margin; a faster mode (720p at 74.25 MHz, say) should be checked, and could need a pipeline stage |
